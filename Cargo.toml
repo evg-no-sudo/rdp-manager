@@ -7,3 +7,4 @@ rust-version = "1.80"
 [dependencies]
 gtk = { package = "gtk4", version = "0.9", features = ["v4_14"] }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_5"] }
+rusqlite = "0.32"

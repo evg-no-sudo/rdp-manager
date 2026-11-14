@@ -1,6 +1,25 @@
+use crate::store::{Profile, Store};
 use adw::prelude::*;
+use std::{cell::RefCell, rc::Rc};
 
-pub fn create_window(app: &adw::Application) -> (adw::ApplicationWindow, adw::TabView) {
+pub struct State {
+    pub store: Store,
+    pub lists: RefCell<Vec<gtk::glib::WeakRef<gtk::ListBox>>>,
+}
+
+impl State {
+    pub fn new(store: Store) -> Rc<Self> {
+        Rc::new(Self {
+            store,
+            lists: RefCell::new(Vec::new()),
+        })
+    }
+}
+
+pub fn create_window(
+    app: &adw::Application,
+    state: Rc<State>,
+) -> (adw::ApplicationWindow, adw::TabView) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Linux RDP Manager")
@@ -31,11 +50,26 @@ pub fn create_window(app: &adw::Application) -> (adw::ApplicationWindow, adw::Ta
     sidebar.set_margin_start(16);
     sidebar.set_margin_end(16);
     sidebar.append(&gtk::Label::new(Some("Профили подключений")));
-    let note = gtk::Label::new(Some(
-        "Список пока пуст.\nХранение профилей и импорт Remmina появятся на следующем этапе.",
-    ));
-    note.set_wrap(true);
-    sidebar.append(&note);
+    let new_profile = gtk::Button::with_label("Создать профиль");
+    sidebar.append(&new_profile);
+    let list = gtk::ListBox::new();
+    list.set_selection_mode(gtk::SelectionMode::None);
+    list.add_css_class("boxed-list");
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&list)
+        .build();
+    sidebar.append(&scroll);
+    state.lists.borrow_mut().push(list.downgrade());
+    crate::profiles_ui::refresh(&state);
+    let weak_window = window.downgrade();
+    let profile_state = state.clone();
+    new_profile.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            crate::profiles_ui::edit(&window, profile_state.clone(), Profile::default());
+        }
+    });
     let revealer = gtk::Revealer::builder()
         .transition_type(gtk::RevealerTransitionType::SlideRight)
         .reveal_child(true)
@@ -71,7 +105,7 @@ pub fn create_window(app: &adw::Application) -> (adw::ApplicationWindow, adw::Ta
     detach.connect_clicked(move |_| {
         if let (Some(app), Some(tabs)) = (weak_app.upgrade(), weak_tabs.upgrade()) {
             if let Some(page) = tabs.selected_page() {
-                let (window, target) = create_window(&app);
+                let (window, target) = create_window(&app, state.clone());
                 // Remove the new window's initial placeholder before transferring the page.
                 if let Some(initial) = target.selected_page() {
                     target.close_page(&initial);
