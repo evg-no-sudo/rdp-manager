@@ -110,7 +110,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     let check_uid = uid.clone();
     let check_state = state.clone();
     let weak_dialog = dialog.downgrade();
-    let check_form = layout.clone();
+    let check_form = layout.downgrade();
     let check_error = error.clone();
     check_password.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else {
@@ -122,8 +122,8 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
             return;
         };
         dialog.set_can_close(false);
-        check_form.set_sensitive(false);
-        let form = check_form.clone();
+        let Some(form) = check_form.upgrade() else { return; };
+        form.set_sensitive(false);
         let error = check_error.clone();
         let uid = check_uid.clone();
         gtk::glib::MainContext::default().spawn_local(async move {
@@ -142,7 +142,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     let weak_dialog = dialog.downgrade();
     let save_state = state.clone();
     let save_error = error.clone();
-    let save_form = layout.clone();
+    let save_form = layout.downgrade();
     let save_id = current_id.clone();
     save.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else { return; };
@@ -186,8 +186,8 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
             return;
         }
         dialog.set_can_close(false);
-        save_form.set_sensitive(false);
-        let form = save_form.clone();
+        let Some(form) = save_form.upgrade() else { return; };
+        form.set_sensitive(false);
         let error = save_error.clone();
         let password = password.clone();
         let uid = uid.clone();

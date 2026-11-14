@@ -3,6 +3,8 @@ mod profiles_ui;
 mod remmina;
 mod secrets;
 mod store;
+mod transfer;
+mod transfer_ui;
 mod ui;
 
 use adw::prelude::*;

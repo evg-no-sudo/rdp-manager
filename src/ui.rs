@@ -77,6 +77,15 @@ pub fn create_window(
     sidebar.append(&new_profile);
     let import = gtk::Button::with_label("Импорт Remmina…");
     sidebar.append(&import);
+    let transfer = gtk::Button::with_label("Обмен через папку…");
+    sidebar.append(&transfer);
+    let weak_window = window.downgrade();
+    let transfer_state = state.clone();
+    transfer.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            crate::transfer_ui::show(&window, transfer_state.clone());
+        }
+    });
     let weak_window = window.downgrade();
     let import_state = state.clone();
     import.connect_clicked(move |_| {

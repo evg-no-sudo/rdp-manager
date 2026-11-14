@@ -194,6 +194,69 @@ impl Store {
         self.0.execute("DELETE FROM profiles WHERE id=?1", [id])?;
         Ok(())
     }
+
+    pub fn apply_transfer(
+        &self,
+        changes: &[crate::transfer::Change],
+    ) -> Result<(usize, usize, usize)> {
+        use crate::transfer::ImportAction;
+        let transaction = self.0.unchecked_transaction()?;
+        let local = self.profiles()?;
+        let mut ids = std::collections::HashSet::new();
+        let mut additions: Vec<&crate::transfer::PortableProfile> = Vec::new();
+        for change in changes {
+            change.incoming.profile().validate()?;
+            if !ids.insert(&change.incoming.uid) {
+                return Err("Повторяющийся идентификатор профиля.".into());
+            }
+            let current = local.iter().find(|p| p.uid == change.incoming.uid);
+            if current != change.expected.as_ref() {
+                return Err(
+                    "Профили изменились после просмотра. Откройте файл заново и повторите выбор."
+                        .into(),
+                );
+            }
+            match change.action {
+                ImportAction::Add if current.is_none() => {
+                    if local.iter().any(|p| change.incoming.same_fields(p)) {
+                        return Err(
+                            "Один из профилей уже появился в базе. Откройте файл заново.".into(),
+                        );
+                    }
+                    if additions
+                        .iter()
+                        .any(|p| change.incoming.same_fields(&p.profile()))
+                    {
+                        return Err("В выбранном наборе повторяется одно подключение. Оставьте одну запись.".into());
+                    }
+                    additions.push(&change.incoming);
+                }
+                ImportAction::Replace | ImportAction::Copy if current.is_some() => {}
+                _ => return Err("Некорректное действие переноса.".into()),
+            }
+        }
+        let (mut added, mut replaced, mut copied) = (0, 0, 0);
+        for change in changes {
+            let mut p = change.incoming.profile();
+            match change.action {
+                ImportAction::Add => {
+                    added += 1;
+                }
+                ImportAction::Replace => {
+                    p.id = change.expected.as_ref().and_then(|p| p.id);
+                    replaced += 1;
+                }
+                ImportAction::Copy => {
+                    p.uid = gtk::glib::uuid_string_random().into();
+                    p.name.push_str(" (копия)");
+                    copied += 1;
+                }
+            }
+            self.save(&p)?;
+        }
+        transaction.commit()?;
+        Ok((added, replaced, copied))
+    }
 }
 
 #[cfg(test)]
@@ -282,6 +345,7 @@ mod tests {
         assert_eq!(store.import(std::slice::from_ref(&p))?, 0);
         let mut other = p.clone();
         other.host = "other.test".into();
+        other.uid = gtk::glib::uuid_string_random().into();
         let mut invalid = p.clone();
         invalid.port = 0;
         assert!(store.import(&[other.clone(), invalid]).is_err());
@@ -290,8 +354,82 @@ mod tests {
         store.0.execute_batch("CREATE TRIGGER reject_bad BEFORE INSERT ON profiles WHEN NEW.name='bad' BEGIN SELECT RAISE(ABORT, 'test rejection'); END;")?;
         let mut rejected = p;
         rejected.name = "bad".into();
+        rejected.uid = gtk::glib::uuid_string_random().into();
         assert!(store.import(&[other, rejected]).is_err());
         assert_eq!(store.profiles()?.len(), 1);
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_preserves_identity_detects_stale_preview_and_copies_conflicts() -> Result<()> {
+        use crate::transfer::{Change, ImportAction, PortableProfile};
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        let p = Profile {
+            name: "Office".into(),
+            host: "office.test".into(),
+            ..Profile::default()
+        };
+        let incoming = PortableProfile::from(&p);
+        assert_eq!(
+            store.apply_transfer(&[Change {
+                incoming: incoming.clone(),
+                expected: None,
+                action: ImportAction::Add
+            }])?,
+            (1, 0, 0)
+        );
+        assert_eq!(store.profiles()?[0].uid, p.uid);
+        let expected = store.profiles()?.remove(0);
+        let mut remote = incoming;
+        remote.host = "remote.test".into();
+        let mut local = expected.clone();
+        local.name = "Changed during preview".into();
+        store.save(&local)?;
+        let change = Change {
+            incoming: remote.clone(),
+            expected: Some(expected),
+            action: ImportAction::Replace,
+        };
+        assert!(store.apply_transfer(&[change]).is_err());
+        assert_eq!(store.profiles()?[0].host, "office.test");
+        store.apply_transfer(&[Change {
+            incoming: remote.clone(),
+            expected: Some(local.clone()),
+            action: ImportAction::Replace,
+        }])?;
+        assert_eq!(store.profiles()?[0].uid, p.uid);
+        assert_eq!(store.profiles()?[0].id, local.id);
+        let expected = store.profiles()?.remove(0);
+        store.apply_transfer(&[Change {
+            incoming: remote,
+            expected: Some(expected),
+            action: ImportAction::Copy,
+        }])?;
+        let profiles = store.profiles()?;
+        assert_eq!(profiles.len(), 2);
+        assert_ne!(profiles[0].uid, profiles[1].uid);
+        Ok(())
+    }
+
+    #[test]
+    fn transfer_rolls_back_on_mid_batch_database_error() -> Result<()> {
+        use crate::transfer::{Change, ImportAction, PortableProfile};
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        store.0.execute_batch("CREATE TRIGGER reject_bad_transfer BEFORE INSERT ON profiles WHEN NEW.name='bad' BEGIN SELECT RAISE(ABORT, 'test rejection'); END;")?;
+        let changes: Vec<_> = ["good", "bad"]
+            .iter()
+            .map(|name| Change {
+                incoming: PortableProfile::from(&Profile {
+                    name: (*name).into(),
+                    host: "server.test".into(),
+                    ..Profile::default()
+                }),
+                expected: None,
+                action: ImportAction::Add,
+            })
+            .collect();
+        assert!(store.apply_transfer(&changes).is_err());
+        assert!(store.profiles()?.is_empty());
         Ok(())
     }
 }
