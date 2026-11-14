@@ -58,9 +58,10 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         } else {
             "Новый профиль"
         })
-        .content_width(500)
+        .content_width(520)
+        .content_height(620)
         .build();
-    let layout = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    let layout = gtk::Box::new(gtk::Orientation::Vertical, 0);
     layout.append(&adw::HeaderBar::new());
     let form = gtk::Box::new(gtk::Orientation::Vertical, 12);
     form.set_margin_top(12);
@@ -91,27 +92,32 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     form.append(&clear_password);
     let check_password = gtk::Button::with_label("Проверить наличие сохранённого пароля");
     form.append(&check_password);
+    // Keep actions and status visible while the taller form can scroll.
+    let footer = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    footer.set_margin_top(8);
+    footer.set_margin_bottom(12);
+    footer.set_margin_start(12);
+    footer.set_margin_end(12);
     let error = gtk::Label::new(None);
-    error.add_css_class("error");
     error.set_wrap(true);
     error.set_visible(false);
-    form.append(&error);
+    footer.append(&error);
     let save = gtk::Button::with_label("Сохранить");
     save.add_css_class("suggested-action");
-    form.append(&save);
+    footer.append(&save);
     let current_id = Rc::new(Cell::new(profile.id));
     let uid = profile.uid.clone();
     let check_uid = uid.clone();
     let check_state = state.clone();
     let weak_dialog = dialog.downgrade();
-    let check_form = form.clone();
+    let check_form = layout.clone();
     let check_error = error.clone();
     check_password.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else {
             return;
         };
         let Some(operation) = check_state.operation(&check_uid) else {
-            check_error.set_text("В другом окне выполняется операция с этим профилем.");
+            show_error(&check_error, "В другом окне выполняется операция с этим профилем.");
             check_error.set_visible(true);
             return;
         };
@@ -123,11 +129,11 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         gtk::glib::MainContext::default().spawn_local(async move {
             let result = secrets::exists(&uid).await;
             drop(operation);
-            error.set_text(match result {
-                Ok(true) => "Пароль найден в локальном Secret Service.",
-                Ok(false) => "Сохранённого пароля на этом ПК нет.",
-                Err(message) => message,
-            });
+            match result {
+                Ok(true) => show_status(&error, "Пароль сохранён на этом ПК. Поле нового пароля остаётся пустым — это нормально.", "success"),
+                Ok(false) => show_status(&error, "Сохранённого пароля на этом ПК нет.", "dim-label"),
+                Err(message) => show_error(&error, message),
+            }
             error.set_visible(true);
             form.set_sensitive(true);
             dialog.set_can_close(true);
@@ -136,17 +142,17 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     let weak_dialog = dialog.downgrade();
     let save_state = state.clone();
     let save_error = error.clone();
-    let save_form = form.clone();
+    let save_form = layout.clone();
     let save_id = current_id.clone();
     save.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else { return; };
         let Some(operation) = save_state.operation(&uid) else {
-            save_error.set_text("В другом окне выполняется операция с этим профилем.");
+            show_error(&save_error, "В другом окне выполняется операция с этим профилем.");
             save_error.set_visible(true);
             return;
         };
         if clear_password.is_active() && !password.text().is_empty() {
-            save_error.set_text("Выберите одно действие: ввести новый пароль или удалить сохранённый.");
+            show_error(&save_error, "Выберите одно действие: ввести новый пароль или удалить сохранённый.");
             save_error.set_visible(true);
             return;
         }
@@ -166,7 +172,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         let id = match result {
             Ok(id) => id,
             Err(message) => {
-                save_error.set_text(&message.to_string());
+                show_error(&save_error, &message.to_string());
                 save_error.set_visible(true);
                 return;
             }
@@ -197,7 +203,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
                     dialog.close();
                 }
                 Err(message) => {
-                    error.set_text(&format!("Параметры профиля сохранены. Операция с паролем не выполнена. {message} Повторите сохранение после разблокировки хранилища."));
+                    show_error(&error, &format!("Параметры профиля сохранены. Операция с паролем не выполнена. {message} Повторите сохранение после разблокировки хранилища."));
                     error.set_visible(true);
                 }
             }
@@ -206,9 +212,9 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     if let Some(id) = profile.id {
         let delete = gtk::Button::with_label("Удалить профиль…");
         delete.add_css_class("destructive-action");
-        form.append(&delete);
+        footer.append(&delete);
         let weak_dialog = dialog.downgrade();
-        let weak_form = form.downgrade();
+        let weak_form = layout.downgrade();
         delete.connect_clicked(move |button| {
             let confirm = adw::AlertDialog::builder()
                 .heading("Удалить профиль и локальный пароль?")
@@ -227,7 +233,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
                 if response != "delete" { return; }
                 let (Some(dialog), Some(form)) = (weak_dialog.upgrade(), weak_form.upgrade()) else { return; };
                 let Some(operation) = state.operation(&uid) else {
-                    error.set_text("В другом окне выполняется операция с этим профилем.");
+                    show_error(&error, "В другом окне выполняется операция с этим профилем.");
                     error.set_visible(true);
                     return;
                 };
@@ -247,7 +253,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
                     match result {
                         Ok(()) => { refresh(&state); dialog.close(); }
                         Err(message) => {
-                            error.set_text(&format!("Профиль не удалён. {message}"));
+                            show_error(&error, &format!("Профиль не удалён. {message}"));
                             error.set_visible(true);
                         }
                     }
@@ -256,7 +262,26 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
             confirm.present(Some(button));
         });
     }
-    layout.append(&form);
+    let scroll = gtk::ScrolledWindow::builder()
+        .hscrollbar_policy(gtk::PolicyType::Never)
+        .vexpand(true)
+        .child(&form)
+        .build();
+    layout.append(&scroll);
+    layout.append(&footer);
     dialog.set_child(Some(&layout));
     dialog.present(Some(parent));
+}
+
+fn show_status(label: &gtk::Label, message: &str, class: &str) {
+    for previous in ["success", "error", "dim-label"] {
+        label.remove_css_class(previous);
+    }
+    label.add_css_class(class);
+    label.set_text(message);
+    label.set_visible(true);
+}
+
+fn show_error(label: &gtk::Label, message: &str) {
+    show_status(label, message, "error");
 }

@@ -18,6 +18,24 @@ fn attributes(uid: &str) -> HashMap<&str, &str> {
 
 pub const UNAVAILABLE: &str = "Не удалось обратиться к Secret Service. Проверьте, что системное хранилище паролей запущено и разблокировано. Пароль не записан в файл или SQLite.";
 
+fn explain(error: gtk::glib::Error) -> &'static str {
+    use gtk::gio::{DBusError, IOErrorEnum};
+    if error.matches(DBusError::ServiceUnknown) || error.matches(DBusError::NameHasNoOwner) {
+        "Secret Service недоступен: в пользовательской сессии нет службы хранения паролей."
+    } else if error.matches(libsecret::Error::IsLocked) {
+        "Системное хранилище заблокировано. Разблокируйте его и повторите сохранение."
+    } else if error.matches(IOErrorEnum::Cancelled) {
+        "Операция с хранилищем отменена. Повторите её и подтвердите системный запрос."
+    } else if error.matches(DBusError::AccessDenied) || error.matches(IOErrorEnum::PermissionDenied)
+    {
+        "Secret Service отказал в доступе. Проверьте разрешения системного хранилища."
+    } else if error.matches(libsecret::Error::NoSuchObject) {
+        "Коллекция паролей недоступна. Проверьте наличие хранилища по умолчанию в менеджере паролей."
+    } else {
+        UNAVAILABLE
+    }
+}
+
 pub async fn store(uid: &str, password: &str) -> Result<(), &'static str> {
     libsecret::password_store_future(
         Some(&schema()),
@@ -27,7 +45,16 @@ pub async fn store(uid: &str, password: &str) -> Result<(), &'static str> {
         password,
     )
     .await
-    .map_err(|_| UNAVAILABLE)
+    .map_err(explain)?;
+    // Some providers/prompts can complete without persisting the item. Do not
+    // close the editor as successful until the stored value can be read back.
+    let stored = libsecret::password_lookup_future(Some(&schema()), attributes(uid))
+        .await
+        .map_err(explain)?;
+    if stored.as_deref() != Some(password) {
+        return Err("Хранилище не подтвердило сохранение пароля. Проверьте разблокировку и повторите попытку.");
+    }
+    Ok(())
 }
 
 pub async fn exists(uid: &str) -> Result<bool, &'static str> {
@@ -35,13 +62,13 @@ pub async fn exists(uid: &str) -> Result<bool, &'static str> {
     libsecret::password_lookup_future(Some(&schema()), attributes(uid))
         .await
         .map(|value| value.is_some())
-        .map_err(|_| UNAVAILABLE)
+        .map_err(explain)
 }
 
 pub async fn clear(uid: &str) -> Result<(), &'static str> {
     libsecret::password_clear_future(Some(&schema()), attributes(uid))
         .await
-        .map_err(|_| UNAVAILABLE)
+        .map_err(explain)
 }
 
 #[cfg(test)]
