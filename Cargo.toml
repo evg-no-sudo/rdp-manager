@@ -24,3 +24,7 @@ base64 = "0.22"
 [build-dependencies]
 cc = "1"
 pkg-config = "0.3"
+
+# Pixel packing must also remain usable under cargo run (development builds).
+[profile.dev.package.rdp-manager]
+opt-level = 2

@@ -209,6 +209,14 @@ unsafe extern "C" fn frame_callback(
         if callbacks.control.stopped.load(Ordering::Acquire) {
             return 0;
         }
+        // Reserve the single presentation slot before copying megapixels.
+        // Return 2 to keep native dirty state until GTK consumes the old frame.
+        let Ok(mut latest) = callbacks.control.frame.lock() else {
+            return 0;
+        };
+        if latest.is_some() {
+            return 2;
+        }
         let Some(size) = frame_size(width, height, stride) else {
             return 0;
         };
@@ -217,12 +225,8 @@ unsafe extern "C" fn frame_callback(
         let Some(frame) = copy_frame(source, width, height, stride) else {
             return 0;
         };
-        if let Ok(mut latest) = callbacks.control.frame.lock() {
-            *latest = Some(frame);
-            1
-        } else {
-            0
-        }
+        *latest = Some(frame);
+        1
     }))
     .unwrap_or(0)
 }
@@ -468,6 +472,35 @@ pub fn remote_point(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn presentation_backpressure_retains_latest_native_update() {
+        let (tx, _input) = mpsc::sync_channel(1);
+        let (events, _rx) = mpsc::channel();
+        let control = Arc::new(Control {
+            stopped: AtomicBool::new(false),
+            overflow: AtomicBool::new(false),
+            native: Mutex::new(None),
+            tx,
+            motion: Mutex::new(None),
+            frame: Mutex::new(None),
+        });
+        let mut callbacks = Callbacks {
+            control: control.clone(),
+            events,
+        };
+        let opaque = &mut callbacks as *mut Callbacks as *mut c_void;
+        let first = [1, 2, 3, 0];
+        let last = [4, 5, 6, 0];
+        unsafe {
+            assert_eq!(frame_callback(opaque, first.as_ptr(), 1, 1, 4), 1);
+            assert_eq!(frame_callback(opaque, last.as_ptr(), 1, 1, 4), 2);
+            assert_eq!(control.take_frame().unwrap().data, [1, 2, 3, 255]);
+            // Native retries its still-dirty buffer, even with no further EndPaint.
+            assert_eq!(frame_callback(opaque, last.as_ptr(), 1, 1, 4), 1);
+            assert_eq!(control.take_frame().unwrap().data, [4, 5, 6, 255]);
+        }
+    }
+
     #[test]
     fn frames_are_bounded_packed_and_opaque() {
         let frame = copy_frame(

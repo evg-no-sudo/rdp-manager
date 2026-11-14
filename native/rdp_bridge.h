@@ -2,6 +2,7 @@
 #define RDP_MANAGER_BRIDGE_H
 #include <stdint.h>
 typedef struct RdpBridge RdpBridge;
+/* Frame result: 0 error, 1 consumed, 2 busy (retain dirty framebuffer). */
 typedef int (*RdpFrame)(void*, const uint8_t*, uint32_t, uint32_t, uint32_t);
 typedef int (*RdpCertificate)(void*, int, const char*, uint16_t, const char*, const char*, const char*, const char*, const char*);
 int rdp_manager_initialize(void);

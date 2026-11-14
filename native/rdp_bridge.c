@@ -8,6 +8,7 @@
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/utils/helpers.h>
 #include <winpr/synch.h>
+#include <winpr/sysinfo.h>
 #include <winpr/ssl.h>
 #include <stdatomic.h>
 #include <stdlib.h>
@@ -20,6 +21,8 @@ struct RdpBridge {
     RdpCertificate certificate;
     atomic_int cancelled;
     atomic_int connected;
+    int frame_dirty;
+    UINT64 last_frame_ms;
     int gdi_ready;
     uint8_t held_keys[512];
     uint16_t held_mouse,held_extended,last_x,last_y,last_unicode;
@@ -44,7 +47,8 @@ static BOOL end_paint(rdpContext* ctx) {
     rdpGdi* gdi = ctx->gdi;
     if (!gdi || atomic_load(&bridge->cancelled)) return FALSE;
     if (gdi->primary->hdc->hwnd->invalid->null) return TRUE;
-    return bridge->frame(bridge->opaque, gdi->primary_buffer, gdi->width, gdi->height, gdi->stride) != 0;
+    bridge->frame_dirty = 1;
+    return TRUE;
 }
 static BOOL desktop_resize(rdpContext* ctx) {
     const UINT32 w = freerdp_settings_get_uint32(ctx->settings, FreeRDP_DesktopWidth);
@@ -192,8 +196,19 @@ int rdp_manager_poll(RdpBridge* bridge) {
     if (!count) return -1;
     DWORD result = WaitForMultipleObjects(count, handles, FALSE, 15);
     if (result == WAIT_FAILED) return -1;
-    if (result == WAIT_TIMEOUT) return 1;
-    return freerdp_check_event_handles(ctx) ? 1 : 0;
+    if (result != WAIT_TIMEOUT && !freerdp_check_event_handles(ctx)) return 0;
+    /* EndPaint may run hundreds of times per protocol batch. Publish only the
+       final framebuffer, at most 60 times/sec, and retain dirty state if GTK
+       has not consumed the previous frame yet. No sleep in paint callbacks. */
+    UINT64 now = GetTickCount64();
+    if (bridge->frame_dirty && bridge->gdi_ready && now - bridge->last_frame_ms >= 16) {
+        rdpGdi* gdi = ctx->gdi;
+        int accepted = bridge->frame(bridge->opaque, gdi->primary_buffer,
+                                    gdi->width, gdi->height, gdi->stride);
+        if (!accepted) return 0;
+        if (accepted == 1) { bridge->frame_dirty = 0; bridge->last_frame_ms = now; }
+    }
+    return 1;
 }
 int rdp_manager_input(RdpBridge* bridge, uint32_t kind, uint16_t flags, uint16_t a, uint16_t b) {
     if (atomic_load(&bridge->cancelled)) return 0;
