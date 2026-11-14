@@ -66,9 +66,19 @@ pub fn create_window(
     header.pack_end(&detach);
     root.append(&header);
 
-    let body = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    let body = gtk::Paned::builder()
+        .orientation(gtk::Orientation::Horizontal)
+        .position(260)
+        .resize_start_child(false)
+        .shrink_start_child(false)
+        .resize_end_child(true)
+        .shrink_end_child(true)
+        .wide_handle(true)
+        .vexpand(true)
+        .build();
     let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    sidebar.set_width_request(240);
+    sidebar.set_width_request(180);
+    sidebar.set_hexpand(false);
     sidebar.set_margin_top(16);
     sidebar.set_margin_start(16);
     sidebar.set_margin_end(16);
@@ -112,6 +122,8 @@ pub fn create_window(
     window.add_action(&import);
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
+    list.set_valign(gtk::Align::Start);
+    list.set_vexpand(false);
     list.add_css_class("boxed-list");
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -128,16 +140,21 @@ pub fn create_window(
             crate::profiles_ui::edit(&window, profile_state.clone(), Profile::default());
         }
     });
-    let revealer = gtk::Revealer::builder()
-        .transition_type(gtk::RevealerTransitionType::SlideRight)
-        .reveal_child(true)
-        .child(&sidebar)
-        .build();
-    toggle
-        .bind_property("active", &revealer, "reveal-child")
-        .sync_create()
-        .build();
-    body.append(&revealer);
+    body.set_start_child(Some(&sidebar));
+    let weak_body = body.downgrade();
+    let weak_sidebar = sidebar.downgrade();
+    let sidebar_width = std::cell::Cell::new(260);
+    toggle.connect_toggled(move |toggle| {
+        if let (Some(body), Some(sidebar)) = (weak_body.upgrade(), weak_sidebar.upgrade()) {
+            if toggle.is_active() {
+                sidebar.set_visible(true);
+                body.set_position(sidebar_width.get());
+            } else {
+                sidebar_width.set(body.position());
+                sidebar.set_visible(false);
+            }
+        }
+    });
 
     let tabs = adw::TabView::new();
     tabs.set_hexpand(true);
@@ -147,7 +164,7 @@ pub fn create_window(
     content.set_hexpand(true);
     content.append(&bar);
     content.append(&tabs);
-    body.append(&content);
+    body.set_end_child(Some(&content));
     root.append(&body);
     window.set_content(Some(&root));
     append_tab(&tabs);

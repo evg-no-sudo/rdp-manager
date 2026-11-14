@@ -33,6 +33,8 @@ pub fn refresh(state: &Rc<State>) {
                     let row = adw::ActionRow::builder()
                         .title(&profile.name)
                         .subtitle(format!("{} · порт {}", profile.host, profile.port))
+                        .title_lines(1)
+                        .subtitle_lines(1)
                         .activatable(true)
                         .build();
                     row.set_use_markup(false);
