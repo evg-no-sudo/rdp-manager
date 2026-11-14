@@ -39,6 +39,27 @@ pub fn refresh(state: &Rc<State>) {
                         .build();
                     row.set_use_markup(false);
                     row.set_tooltip_text(Some("Открыть настройки профиля"));
+                    let connect = gtk::Button::builder()
+                        .icon_name("media-playback-start-symbolic")
+                        .tooltip_text("Подключиться")
+                        .valign(gtk::Align::Center)
+                        .build();
+                    row.add_suffix(&connect);
+                    let connection_state = state.clone();
+                    let connection_profile = profile.clone();
+                    connect.connect_clicked(move |button| {
+                        if let Some(window) = button.root().and_downcast::<adw::ApplicationWindow>()
+                        {
+                            if let Some(tabs) = connection_state.tabs_for(&window) {
+                                crate::rdp_ui::connect(
+                                    &window,
+                                    &tabs,
+                                    connection_state.clone(),
+                                    connection_profile.clone(),
+                                );
+                            }
+                        }
+                    });
                     let state = state.clone();
                     let profile = profile.clone();
                     row.connect_activated(move |row| {

@@ -1,5 +1,8 @@
 mod import_ui;
 mod profiles_ui;
+mod rdp;
+mod rdp_input;
+mod rdp_ui;
 mod remmina;
 mod secrets;
 mod sftp;

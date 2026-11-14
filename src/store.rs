@@ -57,11 +57,24 @@ impl Profile {
 
 pub struct Store(Connection);
 
+pub struct HistoryEntry {
+    pub name: String,
+    pub host: String,
+    pub port: u16,
+    pub username: String,
+    pub started: i64,
+    pub ended: Option<i64>,
+    pub connected: bool,
+    pub outcome: String,
+}
+
 impl Store {
     pub fn open_default() -> Result<Self> {
         let directory = gtk::glib::user_data_dir().join("rdp-manager");
         fs::create_dir_all(&directory)?;
-        Self::open(&directory.join("profiles.sqlite3"))
+        let store = Self::open(&directory.join("profiles.sqlite3"))?;
+        store.0.execute("UPDATE session_history SET ended_at=unixepoch(),outcome='Прервано при завершении приложения' WHERE ended_at IS NULL",[])?;
+        Ok(store)
     }
 
     pub fn open(path: &Path) -> Result<Self> {
@@ -72,7 +85,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 3 {
+        if version > 4 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -122,7 +135,49 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 4 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch("CREATE TABLE session_history (
+                id INTEGER PRIMARY KEY,profile_uid TEXT NOT NULL,name TEXT NOT NULL,
+                host TEXT NOT NULL,port INTEGER NOT NULL,username TEXT NOT NULL,domain TEXT NOT NULL,
+                started_at INTEGER NOT NULL DEFAULT(unixepoch()),ended_at INTEGER,
+                connected INTEGER NOT NULL DEFAULT 0,outcome TEXT NOT NULL DEFAULT '',error_code INTEGER NOT NULL DEFAULT 0
+            ); PRAGMA user_version=4;")?;
+            transaction.commit()?;
+        }
         Ok(Self(connection))
+    }
+
+    pub fn history_start(&self, p: &Profile) -> Result<i64> {
+        self.0.execute("INSERT INTO session_history(profile_uid,name,host,port,username,domain) VALUES(?1,?2,?3,?4,?5,?6)",params![p.uid,p.name,p.host,p.port,p.username,p.domain])?;
+        Ok(self.0.last_insert_rowid())
+    }
+    pub fn history_connected(&self, id: i64) -> Result<()> {
+        self.0.execute(
+            "UPDATE session_history SET connected=1 WHERE id=?1 AND ended_at IS NULL",
+            [id],
+        )?;
+        Ok(())
+    }
+    pub fn history_finish(&self, id: i64, outcome: &str, code: u32) -> Result<()> {
+        self.0.execute("UPDATE session_history SET ended_at=unixepoch(),outcome=?2,error_code=?3 WHERE id=?1 AND ended_at IS NULL",params![id,outcome,code])?;
+        Ok(())
+    }
+    pub fn history(&self) -> Result<Vec<HistoryEntry>> {
+        let mut query=self.0.prepare("SELECT name,host,port,username,started_at,ended_at,connected,outcome FROM session_history ORDER BY id DESC LIMIT 100")?;
+        let rows = query.query_map([], |row| {
+            Ok(HistoryEntry {
+                name: row.get(0)?,
+                host: row.get(1)?,
+                port: row.get(2)?,
+                username: row.get(3)?,
+                started: row.get(4)?,
+                ended: row.get(5)?,
+                connected: row.get(6)?,
+                outcome: row.get(7)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
     pub fn sftp_host_key(&self, host: &str, port: u16) -> Result<Option<Vec<u8>>> {
@@ -334,6 +389,57 @@ mod tests {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "user_version", 99)?;
         assert!(Store::initialize(connection).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn history_records_lifecycle_once_without_secret_fields() -> Result<()> {
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        let profile = Profile {
+            name: "Office".into(),
+            host: "office.test".into(),
+            username: "alice".into(),
+            ..Profile::default()
+        };
+        let id = store.history_start(&profile)?;
+        store.history_connected(id)?;
+        store.history_finish(id, "Сеанс завершён", 0)?;
+        store.history_finish(id, "Закрыто пользователем", 99)?;
+        let entries = store.history()?;
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].connected);
+        assert!(entries[0].ended.is_some());
+        assert_eq!(entries[0].outcome, "Сеанс завершён");
+        let mut query = store.0.prepare("PRAGMA table_info(session_history)")?;
+        let columns = query
+            .query_map([], |row| row.get::<_, String>(1))?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        assert!(!columns.iter().any(|name| name.contains("password")
+            || name.contains("secret")
+            || name.contains("token")));
+        Ok(())
+    }
+
+    #[test]
+    fn schema_three_upgrade_keeps_profiles_and_ssh_trust() -> Result<()> {
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        let profile = Profile {
+            name: "Office".into(),
+            host: "office.test".into(),
+            ..Profile::default()
+        };
+        store.save(&profile)?;
+        store.trust_sftp_host("ssh.test", 22, b"public-key")?;
+        let expected = store.profiles()?;
+        let Store(connection) = store;
+        connection.execute_batch("DROP TABLE session_history;PRAGMA user_version=3;")?;
+        let store = Store::initialize(connection)?;
+        assert_eq!(store.profiles()?, expected);
+        assert_eq!(
+            store.sftp_host_key("ssh.test", 22)?.as_deref(),
+            Some(b"public-key".as_slice())
+        );
+        assert!(store.history()?.is_empty());
         Ok(())
     }
 

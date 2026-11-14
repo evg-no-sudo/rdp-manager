@@ -65,6 +65,13 @@ pub async fn exists(uid: &str) -> Result<bool, &'static str> {
         .map_err(explain)
 }
 
+pub async fn lookup_rdp(uid: &str) -> Result<Option<zeroize::Zeroizing<String>>, &'static str> {
+    libsecret::password_lookup_future(Some(&schema()), attributes(uid))
+        .await
+        .map(|value| value.map(|value| zeroize::Zeroizing::new(value.to_string())))
+        .map_err(explain)
+}
+
 pub async fn clear(uid: &str) -> Result<(), &'static str> {
     libsecret::password_clear_future(Some(&schema()), attributes(uid))
         .await
@@ -160,6 +167,7 @@ mod tests {
             let uid = gtk::glib::uuid_string_random();
             assert!(!exists(&uid).await.unwrap());
             store(&uid, "synthetic-test-value").await.unwrap();
+            assert!(lookup_rdp(&uid).await.unwrap().unwrap().as_str() == "synthetic-test-value");
             assert!(exists(&uid).await.unwrap());
             store(&uid, "replacement-test-value").await.unwrap();
             let value = libsecret::password_lookup_future(Some(&schema()), attributes(&uid))

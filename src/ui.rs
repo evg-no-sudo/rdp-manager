@@ -1,11 +1,19 @@
 use crate::store::{Profile, Store};
 use adw::prelude::*;
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
+type SessionStop = (gtk::glib::WeakRef<gtk::Widget>, Rc<dyn Fn()>);
 
 pub struct State {
     pub store: Store,
     pub lists: RefCell<Vec<gtk::glib::WeakRef<gtk::ListBox>>>,
     operations: RefCell<HashSet<String>>,
+    session_stops: RefCell<Vec<SessionStop>>,
+    views: RefCell<
+        Vec<(
+            gtk::glib::WeakRef<adw::ApplicationWindow>,
+            gtk::glib::WeakRef<adw::TabView>,
+        )>,
+    >,
 }
 
 impl State {
@@ -14,7 +22,41 @@ impl State {
             store,
             lists: RefCell::new(Vec::new()),
             operations: RefCell::new(HashSet::new()),
+            session_stops: RefCell::new(Vec::new()),
+            views: RefCell::new(Vec::new()),
         })
+    }
+
+    pub fn tabs_for(&self, target: &adw::ApplicationWindow) -> Option<adw::TabView> {
+        self.views.borrow().iter().find_map(|(window, tabs)| {
+            if window.upgrade().as_ref() == Some(target) {
+                tabs.upgrade()
+            } else {
+                None
+            }
+        })
+    }
+
+    pub fn register_session(&self, widget: &impl IsA<gtk::Widget>, stop: Rc<dyn Fn()>) {
+        let mut sessions = self.session_stops.borrow_mut();
+        sessions.retain(|(widget, _)| widget.upgrade().is_some());
+        sessions.push((widget.as_ref().downgrade(), stop));
+    }
+    pub fn close_session(&self, widget: &gtk::Widget) {
+        let stop = self
+            .session_stops
+            .borrow()
+            .iter()
+            .find_map(|(candidate, stop)| {
+                if candidate.upgrade().as_ref() == Some(widget) {
+                    Some(stop.clone())
+                } else {
+                    None
+                }
+            });
+        if let Some(stop) = stop {
+            stop();
+        }
     }
 
     pub fn operation(self: &Rc<Self>, uid: &str) -> Option<Operation> {
@@ -104,6 +146,7 @@ pub fn create_window(
     menu.append(Some("Обмен через папку…"), Some("win.transfer-profiles"));
     menu.append(Some("WebDAV / Nextcloud…"), Some("win.webdav"));
     menu.append(Some("SFTP / SSH…"), Some("win.sftp"));
+    menu.append(Some("История подключений…"), Some("win.history"));
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text("Импорт и обмен подключениями")
@@ -143,6 +186,7 @@ pub fn create_window(
         ),
         ("webdav", crate::webdav_ui::show),
         ("sftp", crate::sftp_ui::show),
+        ("history", crate::rdp_ui::history),
     ] {
         let action = gtk::gio::SimpleAction::new(name, None);
         let weak_window = window.downgrade();
@@ -191,6 +235,29 @@ pub fn create_window(
     });
 
     let tabs = adw::TabView::new();
+    let close_state = state.clone();
+    tabs.connect_close_page(move |_, page| {
+        close_state.close_session(&page.child());
+        gtk::glib::Propagation::Proceed
+    });
+    let weak_tabs = tabs.downgrade();
+    let close_state = state.clone();
+    window.connect_close_request(move |_| {
+        if let Some(tabs) = weak_tabs.upgrade() {
+            for index in 0..tabs.n_pages() {
+                close_state.close_session(&tabs.nth_page(index).child());
+            }
+        }
+        gtk::glib::Propagation::Proceed
+    });
+    state
+        .views
+        .borrow_mut()
+        .retain(|(window, tabs)| window.upgrade().is_some() && tabs.upgrade().is_some());
+    state
+        .views
+        .borrow_mut()
+        .push((window.downgrade(), tabs.downgrade()));
     tabs.set_hexpand(true);
     tabs.set_vexpand(true);
     let bar = adw::TabBar::builder().view(&tabs).autohide(false).build();
@@ -232,7 +299,7 @@ fn append_tab(tabs: &adw::TabView) {
         .icon_name("network-server-symbolic")
         .title("Новая RDP-сессия")
         .description(
-            "Интерфейс готов. Подключение через FreeRDP будет добавлено на следующем этапе.",
+            "Нажмите кнопку подключения справа от нужного профиля в боковой панели. Параметры профиля открываются нажатием на его название.",
         )
         .build();
     let tab = tabs.append(&page);
