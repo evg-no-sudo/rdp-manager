@@ -138,6 +138,27 @@ impl Store {
         Ok(())
     }
 
+    /// Atomically add profiles, skipping exact identities already in the database/batch.
+    pub fn import(&self, profiles: &[Profile]) -> Result<usize> {
+        for profile in profiles {
+            profile.validate()?;
+        }
+        let transaction = self.0.unchecked_transaction()?;
+        let mut added = 0;
+        for p in profiles {
+            added += transaction.execute(
+                "INSERT INTO profiles(name,host,port,username,domain)
+                 SELECT ?1,?2,?3,?4,?5 WHERE NOT EXISTS (
+                     SELECT 1 FROM profiles WHERE name=?1 AND host=?2 COLLATE NOCASE
+                     AND port=?3 AND username=?4 AND domain=?5
+                 )",
+                params![p.name, p.host, p.port, p.username, p.domain],
+            )?;
+        }
+        transaction.commit()?;
+        Ok(added)
+    }
+
     pub fn delete(&self, id: i64) -> Result<()> {
         self.0.execute("DELETE FROM profiles WHERE id=?1", [id])?;
         Ok(())
@@ -184,6 +205,31 @@ mod tests {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "user_version", 99)?;
         assert!(Store::initialize(connection).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn import_is_atomic_and_skips_duplicates() -> Result<()> {
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        let p = Profile {
+            name: "Imported".into(),
+            host: "server.test".into(),
+            ..Profile::default()
+        };
+        assert_eq!(store.import(&[p.clone(), p.clone()])?, 1);
+        assert_eq!(store.import(std::slice::from_ref(&p))?, 0);
+        let mut other = p.clone();
+        other.host = "other.test".into();
+        let mut invalid = p.clone();
+        invalid.port = 0;
+        assert!(store.import(&[other.clone(), invalid]).is_err());
+        assert_eq!(store.profiles()?.len(), 1);
+        // A database error midway through the batch must roll back earlier inserts.
+        store.0.execute_batch("CREATE TRIGGER reject_bad BEFORE INSERT ON profiles WHEN NEW.name='bad' BEGIN SELECT RAISE(ABORT, 'test rejection'); END;")?;
+        let mut rejected = p;
+        rejected.name = "bad".into();
+        assert!(store.import(&[other, rejected]).is_err());
+        assert_eq!(store.profiles()?.len(), 1);
         Ok(())
     }
 }

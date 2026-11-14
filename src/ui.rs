@@ -52,6 +52,15 @@ pub fn create_window(
     sidebar.append(&gtk::Label::new(Some("Профили подключений")));
     let new_profile = gtk::Button::with_label("Создать профиль");
     sidebar.append(&new_profile);
+    let import = gtk::Button::with_label("Импорт Remmina…");
+    sidebar.append(&import);
+    let weak_window = window.downgrade();
+    let import_state = state.clone();
+    import.connect_clicked(move |_| {
+        if let Some(window) = weak_window.upgrade() {
+            crate::import_ui::choose(&window, import_state.clone());
+        }
+    });
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("boxed-list");
