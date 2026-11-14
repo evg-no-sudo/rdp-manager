@@ -17,6 +17,7 @@
 #include <winpr/ssl.h>
 #include <stdatomic.h>
 #include <stdlib.h>
+#include <stdio.h>
 #include <string.h>
 
 struct RdpBridge {
@@ -35,6 +36,13 @@ struct RdpBridge {
     pcRdpgfxStartFrame gfx_start;
     pcRdpgfxEndFrame gfx_end;
     UINT64 last_frame_ms;
+    atomic_uint_fast64_t paints;
+    UINT64 complete_frames, publications, copy_us;
+    UINT32 classic_codec;
+    pSurfaceBits surface_bits;
+    pBitmapUpdate bitmap_update;
+    UINT32 last_codec;
+    pcRdpgfxSurfaceCommand gfx_command;
     int gdi_ready;
     uint8_t held_keys[512];
     uint16_t held_mouse,held_extended,last_x,last_y,last_unicode;
@@ -47,6 +55,7 @@ int rdp_manager_initialize(void) {
         && freerdp_setApplicationDetails("RdpManager", "RdpManager", 1)
         && freerdp_register_addin_provider(freerdp_channels_load_static_addin_entry, 0) == 0;
 }
+static int publish_frame(RdpBridge* bridge, BOOL boundary);
 static UINT gfx_start_frame(RdpgfxClientContext* gfx, const RDPGFX_START_FRAME_PDU* frame) {
     rdpGdi* gdi = gfx->custom;
     RdpBridge* bridge = bridge_of(gdi->context);
@@ -60,6 +69,19 @@ static UINT gfx_end_frame(RdpgfxClientContext* gfx, const RDPGFX_END_FRAME_PDU* 
     RdpBridge* bridge = bridge_of(gdi->context);
     EnterCriticalSection(&bridge->graphics_lock);
     UINT result = bridge->gfx_end(gfx, frame);
+    if (result == CHANNEL_RC_OK) {
+        bridge->complete_frames++;
+        if (!publish_frame(bridge, TRUE)) result = ERROR_INTERNAL_ERROR;
+    }
+    LeaveCriticalSection(&bridge->graphics_lock);
+    return result;
+}
+static UINT gfx_surface_command(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_COMMAND* command) {
+    rdpGdi* gdi = gfx->custom;
+    RdpBridge* bridge = bridge_of(gdi->context);
+    EnterCriticalSection(&bridge->graphics_lock);
+    bridge->last_codec = command->codecId;
+    UINT result = bridge->gfx_command(gfx, command);
     LeaveCriticalSection(&bridge->graphics_lock);
     return result;
 }
@@ -76,8 +98,10 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
     }
     bridge->gfx_start = gfx->StartFrame;
     bridge->gfx_end = gfx->EndFrame;
+    bridge->gfx_command = gfx->SurfaceCommand;
     gfx->StartFrame = gfx_start_frame;
     gfx->EndFrame = gfx_end_frame;
+    gfx->SurfaceCommand = gfx_surface_command;
     bridge->gfx = gfx;
     LeaveCriticalSection(&bridge->graphics_lock);
 }
@@ -102,12 +126,14 @@ static BOOL surface_marker(rdpContext* ctx, const SURFACE_FRAME_MARKER* marker) 
     RdpBridge* b = bridge_of(ctx);
     if (b->surface_marker && !b->surface_marker(ctx, marker)) return FALSE;
     b->surface_frame_open = marker->frameAction == SURFACECMD_FRAMEACTION_BEGIN;
+    if (!b->surface_frame_open) { b->complete_frames++; return publish_frame(b, TRUE) != 0; }
     return TRUE;
 }
 static BOOL order_marker(rdpContext* ctx, const FRAME_MARKER_ORDER* marker) {
     RdpBridge* b = bridge_of(ctx);
     if (b->order_marker && !b->order_marker(ctx, marker)) return FALSE;
     b->order_frame_open = marker->action == FRAME_START;
+    if (!b->order_frame_open) { b->complete_frames++; return publish_frame(b, TRUE) != 0; }
     return TRUE;
 }
 
@@ -122,6 +148,7 @@ static BOOL end_paint(rdpContext* ctx) {
     rdpGdi* gdi = ctx->gdi;
     if (!gdi || atomic_load(&bridge->cancelled)) return FALSE;
     if (gdi->primary->hdc->hwnd->invalid->null) return TRUE;
+    atomic_fetch_add(&bridge->paints, 1);
     atomic_store(&bridge->frame_dirty, 1);
     return TRUE;
 }
@@ -139,6 +166,20 @@ static BOOL pointer_system(rdpContext* c,const POINTER_SYSTEM_UPDATE* p){(void)c
 static BOOL pointer_color(rdpContext* c,const POINTER_COLOR_UPDATE* p){(void)c;(void)p;return TRUE;}
 static BOOL pointer_new(rdpContext* c,const POINTER_NEW_UPDATE* p){(void)c;(void)p;return TRUE;}
 static BOOL pointer_cached(rdpContext* c,const POINTER_CACHED_UPDATE* p){(void)c;(void)p;return TRUE;}
+static BOOL surface_bits(rdpContext* ctx, const SURFACE_BITS_COMMAND* cmd) {
+    RdpBridge* b = bridge_of(ctx);
+    UINT32 codec = cmd->bmp.codecID;
+    b->last_codec = codec;
+    b->classic_codec = codec == 0 ? 3 :
+        codec == freerdp_settings_get_uint32(ctx->settings, FreeRDP_RemoteFxCodecId) ? 1 :
+        codec == freerdp_settings_get_uint32(ctx->settings, FreeRDP_NSCodecId) ? 2 : 4;
+    return b->surface_bits(ctx, cmd);
+}
+static BOOL bitmap_update(rdpContext* ctx, const BITMAP_UPDATE* update) {
+    RdpBridge* b = bridge_of(ctx);
+    b->classic_codec = 0; b->last_codec = 0;
+    return b->bitmap_update(ctx, update);
+}
 static BOOL post_connect(freerdp* instance) {
     const UINT32 w=freerdp_settings_get_uint32(instance->context->settings,FreeRDP_DesktopWidth);
     const UINT32 h=freerdp_settings_get_uint32(instance->context->settings,FreeRDP_DesktopHeight);
@@ -150,6 +191,10 @@ static BOOL post_connect(freerdp* instance) {
     instance->context->update->BeginPaint = begin_paint;
     instance->context->update->EndPaint = end_paint;
     instance->context->update->DesktopResize = desktop_resize;
+    bridge->surface_bits = instance->context->update->SurfaceBits;
+    bridge->bitmap_update = instance->context->update->BitmapUpdate;
+    instance->context->update->SurfaceBits = surface_bits;
+    instance->context->update->BitmapUpdate = bitmap_update;
     bridge->surface_marker = instance->context->update->SurfaceFrameMarker;
     bridge->order_marker = instance->context->update->altsec->FrameMarker;
     instance->context->update->SurfaceFrameMarker = surface_marker;
@@ -223,6 +268,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     atomic_init(&bridge->cancelled, 0);
     atomic_init(&bridge->connected, 0);
     atomic_init(&bridge->frame_dirty, 0);
+    atomic_init(&bridge->paints, 0);
     InitializeCriticalSection(&bridge->graphics_lock);
     bridge->opaque = opaque; bridge->frame = frame; bridge->certificate = certificate;
     bridge->instance = freerdp_new();
@@ -270,8 +316,8 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_AudioPlayback, FALSE);
     SET_BOOL(FreeRDP_RedirectDrives, FALSE);
     SET_BOOL(FreeRDP_RedirectSmartCards, FALSE);
-    SET_BOOL(FreeRDP_RemoteFxCodec, FALSE);
-    SET_BOOL(FreeRDP_NSCodec, FALSE);
+    SET_BOOL(FreeRDP_RemoteFxCodec, TRUE);
+    SET_BOOL(FreeRDP_NSCodec, TRUE);
     SET_BOOL(FreeRDP_RedirectClipboard, FALSE);
     SET_BOOL(FreeRDP_AsyncUpdate, FALSE);
     SET_BOOL(FreeRDP_AsyncChannels, FALSE);
@@ -297,20 +343,23 @@ int rdp_manager_poll(RdpBridge* bridge) {
     DWORD result = WaitForMultipleObjects(count, handles, FALSE, 15);
     if (result == WAIT_FAILED) return -1;
     if (result != WAIT_TIMEOUT && !freerdp_check_event_handles(ctx)) return 0;
-    /* EndPaint may run hundreds of times per protocol batch. Publish only the
-       final framebuffer, at most 60 times/sec, and retain dirty state if GTK
-       has not consumed the previous frame yet. No sleep in paint callbacks. */
+    return publish_frame(bridge, FALSE);
+}
+static int publish_frame(RdpBridge* bridge, BOOL boundary) {
+    rdpContext* ctx = bridge->instance->context;
     UINT64 now = GetTickCount64();
     EnterCriticalSection(&bridge->graphics_lock);
     RdpgfxClientContext* gfx = bridge->gfx;
     if (gfx) EnterCriticalSection(&gfx->mux);
     int accepted = 2;
     if (atomic_load(&bridge->frame_dirty) && bridge->gdi_ready && !ctx->gdi->inGfxFrame
-        && !bridge->surface_frame_open && !bridge->order_frame_open && now - bridge->last_frame_ms >= 16) {
+        && !bridge->surface_frame_open && !bridge->order_frame_open && (boundary || now - bridge->last_frame_ms >= 16)) {
         rdpGdi* gdi = ctx->gdi;
+        UINT64 started = winpr_GetTickCount64NS();
         accepted = bridge->frame(bridge->opaque, gdi->primary_buffer,
                                 gdi->width, gdi->height, gdi->stride);
-        if (accepted == 1) { atomic_store(&bridge->frame_dirty, 0); bridge->last_frame_ms = now; }
+        bridge->copy_us += (winpr_GetTickCount64NS() - started) / 1000;
+        if (accepted == 1) { bridge->publications++; atomic_store(&bridge->frame_dirty, 0); bridge->last_frame_ms = now; }
     }
     if (gfx) LeaveCriticalSection(&gfx->mux);
     LeaveCriticalSection(&bridge->graphics_lock);
@@ -384,3 +433,20 @@ void rdp_manager_free(RdpBridge* bridge) {
 }
 
 const char* rdp_manager_build_config(void) { return freerdp_get_build_config(); }
+
+
+void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity) {
+    EnterCriticalSection(&bridge->graphics_lock);
+    rdpSettings* settings = bridge->instance->context->settings;
+    const char* classic[] = {"bitmap", "RemoteFX", "NSCodec", "raw-surface", "other-surface"};
+    snprintf(output, capacity,
+        "mode=%s classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu rfx=%d nsc=%d",
+        bridge->gfx ? "EGFX" : "classic", bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
+        freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
+        freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
+        (unsigned long long)atomic_load(&bridge->paints), (unsigned long long)bridge->complete_frames,
+        (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us,
+        freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec),
+        freerdp_settings_get_bool(settings, FreeRDP_NSCodec));
+    LeaveCriticalSection(&bridge->graphics_lock);
+}

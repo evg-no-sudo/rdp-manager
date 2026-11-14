@@ -338,17 +338,12 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_cad = cad.downgrade();
     let weak_page = page.downgrade();
     let changed_certificate = Cell::new(false);
-    glib::timeout_add_local(Duration::from_millis(16), move || {
-        let (Some(root), Some(picture), Some(status), Some(disconnect), Some(cad)) = (
-            weak_root.upgrade(),
-            weak_picture.upgrade(),
-            weak_status.upgrade(),
-            weak_disconnect.upgrade(),
-            weak_cad.upgrade(),
-        ) else {
-            control.stop();
-            return glib::ControlFlow::Break;
-        };
+    let frame_control = control.clone();
+    let trace_graphics = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
+    let shown = Cell::new(0u64);
+    let last_trace = Cell::new(std::time::Instant::now());
+    picture.add_tick_callback(move |picture, _| {
+        let control = &frame_control;
         if let Some(frame) = control.take_frame() {
             size.set((frame.width, frame.height));
             let bytes = glib::Bytes::from_owned(frame.data);
@@ -360,7 +355,35 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                 frame.width as usize * 4,
             );
             picture.set_paintable(Some(&texture));
+            shown.set(shown.get() + 1);
         }
+        if trace_graphics && last_trace.get().elapsed() >= Duration::from_secs(3) {
+            let elapsed = last_trace.get().elapsed().as_secs_f64();
+            let renderer = picture
+                .native()
+                .and_then(|native| native.renderer())
+                .map(|renderer| renderer.type_().name().to_string())
+                .unwrap_or_else(|| "unavailable".into());
+            eprintln!(
+                "[rdp-present] renderer={renderer} texture_updates_per_sec={:.1}",
+                shown.get() as f64 / elapsed
+            );
+            shown.set(0);
+            last_trace.set(std::time::Instant::now());
+        }
+        glib::ControlFlow::Continue
+    });
+    glib::timeout_add_local(Duration::from_millis(16), move || {
+        let (Some(root), Some(picture), Some(status), Some(disconnect), Some(cad)) = (
+            weak_root.upgrade(),
+            weak_picture.upgrade(),
+            weak_status.upgrade(),
+            weak_disconnect.upgrade(),
+            weak_cad.upgrade(),
+        ) else {
+            control.stop();
+            return glib::ControlFlow::Break;
+        };
         while let Ok(event) = events.try_recv() {
             match event {
                 Event::Connected => {

@@ -43,6 +43,7 @@ extern "C" {
     ) -> *mut Native;
     fn rdp_manager_connect(native: *mut Native) -> c_int;
     fn rdp_manager_poll(native: *mut Native) -> c_int;
+    fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
     fn rdp_manager_input(native: *mut Native, kind: u32, flags: u16, a: u16, b: u16) -> c_int;
     fn rdp_manager_cancel(native: *mut Native);
     fn rdp_manager_error(native: *mut Native) -> u32;
@@ -428,7 +429,20 @@ fn run(
     let connected = unsafe { rdp_manager_connect(native) } != 0;
     if connected {
         let _ = callbacks.events.send(Event::Connected);
+        let trace = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
+        let mut last_trace = std::time::Instant::now() - Duration::from_secs(3);
         'session: while !control.stopped.load(Ordering::Acquire) {
+            if trace && last_trace.elapsed() >= Duration::from_secs(3) {
+                let mut output = [0i8; 512];
+                unsafe {
+                    rdp_manager_graphics_stats(native, output.as_mut_ptr(), output.len());
+                }
+                eprintln!(
+                    "[rdp-graphics] {}",
+                    unsafe { CStr::from_ptr(output.as_ptr()) }.to_string_lossy()
+                );
+                last_trace = std::time::Instant::now();
+            }
             for _ in 0..128 {
                 match input.try_recv() {
                     Ok(event) => {

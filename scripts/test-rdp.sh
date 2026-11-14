@@ -26,5 +26,15 @@ export RDP_MANAGER_NATIVE_PORT="$port"
 "$fixture/server" "$port" "$fixture/cert.pem" "$fixture/key.pem" "$fixture/input.log" "$fixture/ready" "$fixture/changed-cert.pem" "$fixture/changed-key.pem" > "$fixture/server.log" 2>&1 &
 server_pid=$!
 for attempt in $(seq 1 50);do if [ -f "$fixture/ready" ];then break;fi;sleep 0.1;done
+# Exercise the actual EGFX/GDI handlers using a connected context/cache.
+cc -std=gnu11 -Wno-deprecated-declarations native/test_graphics.c -o "$fixture/test-graphics" $(pkg-config --cflags --libs freerdp-client3 winpr3)
+if ! timeout 30s "$fixture/test-graphics" "$port" > "$fixture/graphics.log" 2>&1;then cat "$fixture/graphics.log" "$fixture/server.log";exit 1;fi
+rg "^EGFX:" "$fixture/graphics.log"
+kill "$server_pid" 2>/dev/null||true
+wait "$server_pid" 2>/dev/null||true
+rm -f "$fixture/ready"
+"$fixture/server" "$port" "$fixture/cert.pem" "$fixture/key.pem" "$fixture/input.log" "$fixture/ready" "$fixture/changed-cert.pem" "$fixture/changed-key.pem" > "$fixture/server.log" 2>&1 &
+server_pid=$!
+for attempt in $(seq 1 50);do if [ -f "$fixture/ready" ];then break;fi;sleep 0.1;done
 if ! cargo test --locked --offline rdp_live -- --ignored > "$fixture/client.log" 2>&1;then cat "$fixture/client.log" "$fixture/server.log";exit 1;fi
 rg "test rdp::|test result:" "$fixture/client.log"

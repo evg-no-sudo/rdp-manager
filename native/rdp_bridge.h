@@ -1,6 +1,7 @@
 #ifndef RDP_MANAGER_BRIDGE_H
 #define RDP_MANAGER_BRIDGE_H
 #include <stdint.h>
+#include <stddef.h>
 typedef struct RdpBridge RdpBridge;
 /* Frame result: 0 error, 1 consumed, 2 busy (retain dirty framebuffer). */
 typedef int (*RdpFrame)(void*, const uint8_t*, uint32_t, uint32_t, uint32_t);
@@ -12,6 +13,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
                           void* opaque, RdpFrame frame, RdpCertificate certificate);
 int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);
+void rdp_manager_graphics_stats(RdpBridge*, char*, size_t);
 int rdp_manager_input(RdpBridge*, uint32_t kind, uint16_t flags, uint16_t a, uint16_t b);
 /* The only operation allowed concurrently with connect/poll: sets the abort event. */
 void rdp_manager_cancel(RdpBridge*);
