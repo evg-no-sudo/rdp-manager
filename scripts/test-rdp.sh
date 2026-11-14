@@ -7,7 +7,7 @@ cleanup(){ if [ -n "$server_pid" ];then kill "$server_pid" 2>/dev/null||true;wai
 trap cleanup EXIT HUP INT TERM
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$fixture/key.pem" -out "$fixture/cert.pem" -days 1 -subj '/CN=fixture.local' -addext 'subjectAltName=DNS:fixture.local,IP:127.0.0.1' > "$fixture/openssl.log" 2>&1
 openssl req -x509 -newkey rsa:2048 -nodes -keyout "$fixture/changed-key.pem" -out "$fixture/changed-cert.pem" -days 1 -subj '/CN=fixture.local' -addext 'subjectAltName=DNS:fixture.local,IP:127.0.0.1' > "$fixture/changed-openssl.log" 2>&1
-cc -std=gnu11 -Wno-deprecated-declarations native/fixture_server.c -o "$fixture/server" $(pkg-config --cflags --libs freerdp3 winpr3)
+cc -std=gnu11 -Wno-deprecated-declarations native/fixture_server.c -o "$fixture/server" $(pkg-config --cflags --libs freerdp-server3 winpr3)
 port=$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')
 export XDG_CONFIG_HOME="$fixture/config"
 export XDG_DATA_HOME="$fixture/data"

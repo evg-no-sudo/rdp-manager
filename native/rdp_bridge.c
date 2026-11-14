@@ -42,6 +42,7 @@ struct RdpBridge {
     pSurfaceBits surface_bits;
     pBitmapUpdate bitmap_update;
     UINT32 last_codec;
+    UINT32 channel_loads;
     pcRdpgfxSurfaceCommand gfx_command;
     int gdi_ready;
     uint8_t held_keys[512];
@@ -120,7 +121,19 @@ static BOOL pre_connect(freerdp* instance) {
     if (atomic_load(&bridge_of(ctx)->cancelled)) return FALSE;
     if (PubSub_SubscribeChannelConnected(ctx->pubSub, channel_connected) < 0) return FALSE;
     if (PubSub_SubscribeChannelDisconnected(ctx->pubSub, channel_disconnected) < 0) return FALSE;
-    return freerdp_client_load_addins(ctx->channels, ctx->settings);
+    return TRUE;
+}
+static BOOL load_channels(freerdp* instance) {
+    rdpContext* ctx = instance->context;
+    /* Core recreates the channel manager after PreConnect. Load only here. */
+    if (!freerdp_settings_set_bool(ctx->settings, FreeRDP_AudioPlayback, FALSE) ||
+        !freerdp_settings_set_bool(ctx->settings, FreeRDP_AudioCapture, FALSE) ||
+        !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportVideoOptimized, FALSE) ||
+        !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportGeometryTracking, FALSE) ||
+        !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportDisplayControl, FALSE)) return FALSE;
+    if (!freerdp_client_load_addins(ctx->channels, ctx->settings)) return FALSE;
+    bridge_of(ctx)->channel_loads++;
+    return TRUE;
 }
 static BOOL surface_marker(rdpContext* ctx, const SURFACE_FRAME_MARKER* marker) {
     RdpBridge* b = bridge_of(ctx);
@@ -279,6 +292,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     ((BridgeContext*)instance->context)->bridge = bridge;
     instance->PostConnect = post_connect;
     instance->PreConnect = pre_connect;
+    instance->LoadChannels = load_channels;
     instance->PostDisconnect = post_disconnect;
     instance->AuthenticateEx = authenticate;
     instance->VerifyCertificateEx = verify_certificate;
@@ -440,8 +454,8 @@ void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity
     rdpSettings* settings = bridge->instance->context->settings;
     const char* classic[] = {"bitmap", "RemoteFX", "NSCodec", "raw-surface", "other-surface"};
     snprintf(output, capacity,
-        "mode=%s classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu rfx=%d nsc=%d",
-        bridge->gfx ? "EGFX" : "classic", bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
+        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu rfx=%d nsc=%d",
+        bridge->gfx ? "EGFX" : "classic", bridge->channel_loads, bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
         (unsigned long long)atomic_load(&bridge->paints), (unsigned long long)bridge->complete_frames,

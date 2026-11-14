@@ -27,6 +27,9 @@
 
 - `native/rdp_bridge.c` содержит небольшой C ABI над установленным FreeRDP.
   Сборка через pkg-config и cc. Нужен FreeRDP >= 3.25; проверена версия 3.32.2.
+- Виртуальные каналы загружаются через instance.LoadChannels. PreConnect
+  регистрирует только события: FreeRDP пересоздаёт channel manager после него.
+  Загрузка addins в PreConnect приводит к потере каналов при пересоздании.
 - Каждый сеанс владеет FreeRDP-контекстом в одном Rust-потоке. Соединение,
   обработка основного протокола и ввод выполняются в этом потоке. EGFX callbacks
   библиотеки синхронизируются с чтением framebuffer через locks. GTK не получает
@@ -137,7 +140,8 @@ API-ориентиры: [FreeRDP sample client](https://github.com/FreeRDP/FreeR
 
 Раз в три секунды worker выводит строку [rdp-graphics]. Адрес, пользователь,
 пароль, вводимый текст и изображение в неё не входят. mode=EGFX означает
-подключённый графический канал; codec_id — ID реально полученной EGFX
+подключённый графический канал; channel_loads — число успешных загрузок
+каналов через callback LoadChannels; codec_id — ID реально полученной EGFX
 SurfaceCommand (0 uncompressed, 9 progressive, 10 planar, 11 AVC420,
 14 AVC444, 15 AVC444v2). До первой команды ID равен нулю, SolidFill его
 не меняет. В classic classic_codec отражает последний BitmapUpdate или

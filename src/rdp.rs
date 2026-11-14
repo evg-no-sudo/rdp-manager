@@ -766,6 +766,62 @@ mod tests {
                 assert!(prompted && changed && !connected);
             }
         }
+        // Real network drdynvc + rdpgfx negotiation, not just direct GDI callbacks.
+        let (control, events) = start(config()).unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(8);
+        let mut received = false;
+        while std::time::Instant::now() < deadline {
+            while let Ok(event) = events.try_recv() {
+                match event {
+                    Event::Certificate(_, _) => panic!("Saved certificate was not reused"),
+                    Event::Ended { message, .. } => panic!("EGFX ended early: {message}"),
+                    Event::Connected => {}
+                }
+            }
+            if let Some(frame) = control.take_frame() {
+                assert!(std::fs::read_to_string(root.join("input.log"))
+                    .unwrap()
+                    .contains("GFX_END"));
+                assert_eq!((frame.width, frame.height), (640, 480));
+                assert_eq!(&frame.data[..4], &[0x11, 0x22, 0xCC, 255]);
+                assert_eq!(
+                    &frame.data[frame.data.len() - 4..],
+                    &[0x11, 0x22, 0xCC, 255]
+                );
+                let handle = control.native.lock().unwrap();
+                let mut stats = [0i8; 512];
+                unsafe {
+                    rdp_manager_graphics_stats(
+                        handle.unwrap() as *mut Native,
+                        stats.as_mut_ptr(),
+                        stats.len(),
+                    );
+                }
+                let stats = unsafe { CStr::from_ptr(stats.as_ptr()) }.to_string_lossy();
+                assert!(
+                    stats.contains("mode=EGFX")
+                        && stats.contains("channel_loads=1")
+                        && stats.contains("frames=1"),
+                    "{stats}"
+                );
+                received = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(
+            received,
+            "No negotiated EGFX frame (check LoadChannels callback)"
+        );
+        control.stop();
+        loop {
+            if matches!(
+                events.recv_timeout(Duration::from_secs(3)).unwrap(),
+                Event::Ended { .. }
+            ) {
+                break;
+            }
+        }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let stalled_port = listener.local_addr().unwrap().port();
         let (accepted, wait) = mpsc::channel();
