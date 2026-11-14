@@ -72,6 +72,20 @@ fn shortcut(key: gdk::Key) -> Option<u16> {
         _ => None,
     }
 }
+fn russian_scan(key: gdk::Key) -> Option<u16> {
+    let character = key.to_lower().to_unicode()?;
+    for (row, start) in [
+        ("йцукенгшщзхъ", 16),
+        ("фывапролджэ", 30),
+        ("ячсмитьбю", 44),
+        ("ё", 41),
+    ] {
+        if let Some(index) = row.chars().position(|c| c == character) {
+            return Some(start + index as u16);
+        }
+    }
+    None
+}
 fn unicode(control: &Control, text: &str) {
     for code in text.encode_utf16() {
         control.send(Input {
@@ -99,7 +113,36 @@ fn point(picture: &gtk::Picture, x: f64, y: f64, size: (u32, u32)) -> Option<(u1
     )
 }
 
-pub fn attach(picture: &gtk::Picture, control: Arc<Control>, size: Rc<Cell<(u32, u32)>>) {
+pub fn attach(
+    picture: &gtk::Picture,
+    control: Arc<Control>,
+    size: Rc<Cell<(u32, u32)>>,
+    capture: &gtk::ToggleButton,
+    text_mode: &gtk::CheckButton,
+) {
+    let captured: Rc<RefCell<Option<gdk::Toplevel>>> = Rc::new(RefCell::new(None));
+    let weak = picture.downgrade();
+    let grabbed = captured.clone();
+    capture.connect_toggled(move |button| {
+        if let Some(top) = grabbed.borrow_mut().take() {
+            top.restore_system_shortcuts();
+        }
+        if button.is_active() {
+            if let Some(picture) = weak.upgrade() {
+                picture.grab_focus();
+                if let Some(top) = picture
+                    .native()
+                    .and_then(|n| n.surface())
+                    .and_then(|s| s.downcast::<gdk::Toplevel>().ok())
+                {
+                    top.inhibit_system_shortcuts(None::<&gdk::Event>);
+                    *grabbed.borrow_mut() = Some(top);
+                }
+            }
+        }
+    });
+    let text_mode = text_mode.downgrade();
+    let capture_key = capture.downgrade();
     let pressed: Rc<RefCell<HashMap<u32, u16>>> = Rc::new(RefCell::new(HashMap::new()));
     let buttons: Rc<RefCell<HashMap<u32, (u32, u16)>>> = Rc::new(RefCell::new(HashMap::new()));
     let last = Rc::new(Cell::new((0u16, 0u16)));
@@ -115,6 +158,15 @@ pub fn attach(picture: &gtk::Picture, control: Arc<Control>, size: Rc<Cell<(u32,
     let held = pressed.clone();
     let input = im.clone();
     keys.connect_key_pressed(move |controller, key, identity, state| {
+        if key == gdk::Key::Control_R {
+            if let Some(button) = capture_key.upgrade().filter(|b| b.is_active()) {
+                button.set_active(false);
+                for (_, code) in held.borrow_mut().drain() {
+                    sender.send(Input::scan(code, false, false));
+                }
+                return glib::Propagation::Stop;
+            }
+        }
         if key == gdk::Key::Pause {
             sender.send(Input {
                 kind: 4,
@@ -125,19 +177,25 @@ pub fn attach(picture: &gtk::Picture, control: Arc<Control>, size: Rc<Cell<(u32,
             return glib::Propagation::Stop;
         }
         let code = special(key).or_else(|| {
-            if state.intersects(
-                gdk::ModifierType::CONTROL_MASK
-                    | gdk::ModifierType::ALT_MASK
-                    | gdk::ModifierType::SUPER_MASK
-                    | gdk::ModifierType::META_MASK,
-            ) {
-                shortcut(key).or_else(|| {
+            if !text_mode.upgrade().is_some_and(|b| b.is_active())
+                || state.intersects(
+                    gdk::ModifierType::CONTROL_MASK
+                        | gdk::ModifierType::ALT_MASK
+                        | gdk::ModifierType::SUPER_MASK
+                        | gdk::ModifierType::META_MASK,
+                )
+            {
+                (|| {
                     // GDK translates its own backend-specific identity. Do not subtract
                     // an X11 offset or send a Linux evdev code to Windows.
                     let widget = controller.widget()?;
                     let symbols = widget.display().map_keycode(identity)?;
-                    symbols.into_iter().find_map(|(_, symbol)| shortcut(symbol))
-                })
+                    symbols
+                        .iter()
+                        .find_map(|(_, symbol)| shortcut(*symbol))
+                        .or_else(|| symbols.iter().find_map(|(_, symbol)| russian_scan(*symbol)))
+                        .or_else(|| shortcut(key))
+                })()
             } else {
                 None
             }
@@ -283,8 +341,25 @@ pub fn attach(picture: &gtk::Picture, control: Arc<Control>, size: Rc<Cell<(u32,
             b: 0,
         });
     });
+    let capture_unrealize = capture.downgrade();
+    let grabbed = captured.clone();
+    picture.connect_unrealize(move |_| {
+        if let Some(button) = capture_unrealize.upgrade() {
+            button.set_active(false);
+        }
+        if let Some(top) = grabbed.borrow_mut().take() {
+            top.restore_system_shortcuts();
+        }
+    });
     let sender = control;
+    let capture_focus = capture.downgrade();
     focus.connect_leave(move |_| {
+        if let Some(button) = capture_focus.upgrade() {
+            button.set_active(false);
+        }
+        if let Some(top) = captured.borrow_mut().take() {
+            top.restore_system_shortcuts();
+        }
         im.reset();
         im.focus_out();
         for (_, code) in pressed.borrow_mut().drain() {
@@ -312,5 +387,8 @@ mod tests {
         assert_eq!(special(gdk::Key::Delete), Some(0x153));
         assert_eq!(shortcut(gdk::Key::C), Some(46));
         assert_eq!(shortcut(gdk::Key::F1), None);
+        assert_eq!(russian_scan(gdk::Key::Cyrillic_ef), Some(30));
+        assert_eq!(russian_scan(gdk::Key::Cyrillic_YA), Some(44));
+        assert_eq!(russian_scan(gdk::Key::Cyrillic_io), Some(41));
     }
 }

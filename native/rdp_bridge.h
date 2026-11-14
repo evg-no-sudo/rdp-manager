@@ -6,6 +6,7 @@ typedef struct RdpBridge RdpBridge;
 typedef int (*RdpFrame)(void*, const uint8_t*, uint32_t, uint32_t, uint32_t);
 typedef int (*RdpCertificate)(void*, int, const char*, uint16_t, const char*, const char*, const char*, const char*, const char*);
 int rdp_manager_initialize(void);
+const char* rdp_manager_build_config(void);
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
                           const char* password, const char* domain, uint32_t width, uint32_t height,
                           void* opaque, RdpFrame frame, RdpCertificate certificate);

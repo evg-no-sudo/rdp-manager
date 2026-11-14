@@ -28,6 +28,7 @@ type CertCallback = unsafe extern "C" fn(
 ) -> c_int;
 extern "C" {
     fn rdp_manager_initialize() -> c_int;
+    fn rdp_manager_build_config() -> *const c_char;
     fn rdp_manager_new(
         host: *const c_char,
         port: u16,
@@ -47,6 +48,27 @@ extern "C" {
     fn rdp_manager_error(native: *mut Native) -> u32;
     fn rdp_manager_error_name(native: *mut Native) -> *const c_char;
     fn rdp_manager_free(native: *mut Native);
+}
+
+pub fn diagnostics() -> String {
+    let config = unsafe { CStr::from_ptr(rdp_manager_build_config()) }.to_string_lossy();
+    let flags = config
+        .split_whitespace()
+        .filter(|v| {
+            [
+                "WITH_GFX_H264=",
+                "WITH_VIDEO_FFMPEG=",
+                "WITH_FFMPEG_HWACCEL=",
+                "WITH_OPENH264=",
+                "WITH_SIMD=",
+                "WITH_SWSCALE=",
+            ]
+            .iter()
+            .any(|prefix| v.starts_with(prefix))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("FreeRDP build capabilities (not proof of active GPU decoding):\n{flags}\nPresentation: GDI -> CPU copy -> GDK MemoryTexture; zero-copy not implemented.")
 }
 
 pub struct Config {
@@ -69,9 +91,15 @@ pub struct Certificate {
     pub old_fingerprint: String,
     pub changed: bool,
 }
+pub enum CertificateDecision {
+    Reject,
+    Session,
+    Remember,
+}
+
 pub enum Event {
     Connected,
-    Certificate(Certificate, mpsc::Sender<bool>),
+    Certificate(Certificate, mpsc::Sender<CertificateDecision>),
     Ended {
         code: u32,
         message: String,
@@ -274,7 +302,13 @@ unsafe extern "C" fn certificate_callback(
         }
         while !callbacks.control.stopped.load(Ordering::Acquire) {
             match rx.recv_timeout(Duration::from_millis(100)) {
-                Ok(accepted) => return c_int::from(accepted),
+                Ok(decision) => {
+                    return match decision {
+                        CertificateDecision::Reject => 0,
+                        CertificateDecision::Session => 1,
+                        CertificateDecision::Remember => 2,
+                    }
+                }
                 Err(mpsc::RecvTimeoutError::Disconnected) => return 0,
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
             }
@@ -556,7 +590,7 @@ mod tests {
                     assert!(!cert.changed);
                     assert!(!cert.fingerprint.is_empty());
                     prompted = true;
-                    reply.send(false).unwrap();
+                    reply.send(CertificateDecision::Reject).unwrap();
                 }
                 Event::Connected => panic!("Rejected certificate connected"),
                 Event::Ended { .. } => break,
@@ -570,7 +604,7 @@ mod tests {
         loop {
             match bad_events.recv_timeout(Duration::from_secs(5)).unwrap() {
                 Event::Certificate(_, reply) => {
-                    reply.send(true).unwrap();
+                    reply.send(CertificateDecision::Session).unwrap();
                 }
                 Event::Connected => panic!("Wrong NLA password connected"),
                 Event::Ended { code, .. } => {
@@ -588,7 +622,7 @@ mod tests {
             match events.try_recv() {
                 Ok(Event::Certificate(cert, reply)) => {
                     assert!(!cert.changed);
-                    reply.send(true).unwrap();
+                    reply.send(CertificateDecision::Session).unwrap();
                 }
                 Ok(Event::Connected) => {
                     connected = true;
@@ -608,6 +642,12 @@ mod tests {
                 Err(mpsc::TryRecvError::Disconnected) => break,
             }
             if let Some(frame) = control.take_frame() {
+                assert!(
+                    std::fs::read_to_string(root.join("input.log"))
+                        .unwrap()
+                        .contains("FRAME_END"),
+                    "Published an unfinished server frame"
+                );
                 assert_eq!((frame.width, frame.height), (640, 480));
                 assert_eq!(&frame.data[..4], &[0x11, 0x22, 0xCC, 255]);
                 painted = true;
@@ -673,6 +713,43 @@ mod tests {
                 Event::Ended { .. }
             ) {
                 break;
+            }
+        }
+        // Explicit remember must survive a new context. Changed certificates still fail.
+        for attempt in 0..3 {
+            let (control, events) = start(config()).unwrap();
+            let mut prompted = false;
+            let mut connected = false;
+            let mut changed = false;
+            loop {
+                match events.recv_timeout(Duration::from_secs(5)).unwrap() {
+                    Event::Certificate(cert, reply) => {
+                        prompted = true;
+                        changed = cert.changed;
+                        if attempt == 0 {
+                            assert!(!changed);
+                            reply.send(CertificateDecision::Remember).unwrap();
+                        } else if attempt == 1 {
+                            panic!("Remembered certificate prompted again");
+                        } else {
+                            assert!(changed);
+                        }
+                    }
+                    Event::Connected => {
+                        connected = true;
+                        control.stop();
+                    }
+                    Event::Ended { .. } => break,
+                }
+            }
+            if attempt == 0 {
+                assert!(prompted && connected);
+            }
+            if attempt == 1 {
+                assert!(!prompted && connected);
+            }
+            if attempt == 2 {
+                assert!(prompted && changed && !connected);
             }
         }
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();

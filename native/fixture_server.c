@@ -16,7 +16,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-typedef struct {FILE* log;BOOL activated;BOOL painted;} Fixture;
+typedef struct {FILE* log;BOOL activated;BOOL painted;UINT64 end_at;} Fixture;
 static BOOL active(freerdp_peer* peer){((Fixture*)peer->ContextExtra)->activated=TRUE;return TRUE;}
 static BOOL mouse(rdpInput* input,UINT16 flags,UINT16 x,UINT16 y){FILE* log=((Fixture*)input->context->peer->ContextExtra)->log;fprintf(log,"M:%u:%u:%u\n",flags,x,y);fflush(log);return TRUE;}
 static BOOL keyboard(rdpInput* input,UINT16 flags,UINT8 code){FILE* log=((Fixture*)input->context->peer->ContextExtra)->log;fprintf(log,"K:%u:%u\n",flags,code);fflush(log);return TRUE;}
@@ -31,7 +31,7 @@ static BOOL paint(freerdp_peer* peer){
     return peer->context->update->BitmapUpdate(peer->context,&update);
 }
 int main(int argc,char** argv){
-    if(argc!=6)return 2;
+    if(argc!=8)return 2;
     if(!winpr_InitializeSSL(WINPR_SSL_INIT_DEFAULT | WINPR_SSL_INIT_ENABLE_LOCKING))return 2;
     int port=atoi(argv[1]);if(port<1024||port>65535)return 2;
     FILE* log=fopen(argv[4],"w");if(!log)return 3;
@@ -43,13 +43,13 @@ int main(int argc,char** argv){
     struct sockaddr_in address={0};address.sin_family=AF_INET;address.sin_port=htons((uint16_t)port);address.sin_addr.s_addr=htonl(INADDR_LOOPBACK);
     if(bind(listener,(struct sockaddr*)&address,sizeof(address))<0||listen(listener,8)<0)return 5;
     FILE* ready=fopen(argv[5],"w");if(!ready)return 6;fputs("ready",ready);fclose(ready);
-    for(int attempt=0;attempt<4;attempt++){
+    for(int attempt=0;attempt<7;attempt++){
         int fd=accept(listener,NULL,NULL);if(fd<0)break;
         Fixture fixture={.log=log};freerdp_peer* peer=freerdp_peer_new(fd);if(!peer){close(fd);break;}
         peer->ContextExtra=&fixture;peer->ContextSize=sizeof(rdpContext);
         if(!freerdp_peer_context_new(peer)){freerdp_peer_free(peer);continue;}
         rdpSettings* settings=peer->context->settings;
-        rdpPrivateKey* key=freerdp_key_new_from_file(argv[3]);rdpCertificate* cert=freerdp_certificate_new_from_file(argv[2]);
+        rdpPrivateKey* key=freerdp_key_new_from_file(argv[attempt==6?7:3]);rdpCertificate* cert=freerdp_certificate_new_from_file(argv[attempt==6?6:2]);
         BOOL ok=key&&cert&&freerdp_settings_set_pointer_len(settings,FreeRDP_RdpServerRsaKey,key,1)
             &&freerdp_settings_set_pointer_len(settings,FreeRDP_RdpServerCertificate,cert,1)
             &&freerdp_settings_set_bool(settings,FreeRDP_TlsSecurity,TRUE)
@@ -66,7 +66,19 @@ int main(int argc,char** argv){
             HANDLE handles[64]={0};DWORD count=peer->GetEventHandles(peer,handles,64);if(!count)break;
             DWORD status=WaitForMultipleObjects(count,handles,FALSE,50);if(status==WAIT_FAILED)break;
             if(status!=WAIT_TIMEOUT&&!peer->CheckFileDescriptor(peer))break;
-            if(fixture.activated&&!fixture.painted){fixture.painted=TRUE;if(!paint(peer))break;}
+            if(fixture.activated&&!fixture.painted){
+                fixture.painted=TRUE;
+                SURFACE_FRAME_MARKER begin={.frameAction=SURFACECMD_FRAMEACTION_BEGIN,.frameId=1};
+                fprintf(log,"FRAME_BEGIN\n");fflush(log);
+                if(!peer->context->update->SurfaceFrameMarker(peer->context,&begin)||!paint(peer))break;
+                fixture.end_at=GetTickCount64()+200;
+            }
+            if(fixture.end_at&&GetTickCount64()>=fixture.end_at){
+                SURFACE_FRAME_MARKER end={.frameAction=SURFACECMD_FRAMEACTION_END,.frameId=1};
+                fprintf(log,"FRAME_END\n");fflush(log);
+                if(!peer->context->update->SurfaceFrameMarker(peer->context,&end))break;
+                fixture.end_at=0;
+            }
         }
         peer->Disconnect(peer);freerdp_peer_context_free(peer);freerdp_peer_free(peer);
     }

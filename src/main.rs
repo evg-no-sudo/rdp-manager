@@ -17,6 +17,10 @@ mod webdav_ui;
 use adw::prelude::*;
 
 fn main() -> gtk::glib::ExitCode {
+    if std::env::args().skip(1).any(|arg| arg == "--diagnostics") {
+        println!("{}", rdp::diagnostics());
+        return gtk::glib::ExitCode::SUCCESS;
+    }
     let app = adw::Application::builder()
         .application_id("io.github.rdpmanager.RdpManager")
         .build();

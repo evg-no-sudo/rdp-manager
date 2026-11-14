@@ -1,5 +1,5 @@
 use crate::{
-    rdp::{self, Config, Event, Input},
+    rdp::{self, CertificateDecision, Config, Event, Input},
     rdp_input, secrets,
     store::Profile,
     ui::State,
@@ -220,6 +220,25 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let cad = gtk::Button::with_label("Ctrl+Alt+Del");
     cad.set_sensitive(false);
     toolbar.append(&cad);
+    let capture = gtk::ToggleButton::with_label("Захват клавиш");
+    capture.set_tooltip_text(Some("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора."));
+    toolbar.append(&capture);
+    let text_mode = gtk::CheckButton::with_label("Unicode");
+    text_mode.set_tooltip_text(Some("Передача текста по локальной раскладке. Для xrdp оставьте выключенным и переключайте раскладку на удалённом ПК."));
+    let options = gtk::MenuButton::builder()
+        .icon_name("open-menu-symbolic")
+        .tooltip_text("Параметры ввода")
+        .build();
+    let popover = gtk::Popover::new();
+    let options_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    options_box.set_margin_top(12);
+    options_box.set_margin_bottom(12);
+    options_box.set_margin_start(12);
+    options_box.set_margin_end(12);
+    options_box.append(&text_mode);
+    popover.set_child(Some(&options_box));
+    options.set_popover(Some(&popover));
+    toolbar.append(&options);
     let disconnect = gtk::Button::with_label("Отключить");
     toolbar.append(&disconnect);
     root.append(&toolbar);
@@ -277,7 +296,13 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
             }
         }),
     );
-    rdp_input::attach(&picture, control.clone(), size.clone());
+    rdp_input::attach(
+        &picture,
+        control.clone(),
+        size.clone(),
+        &capture,
+        &text_mode,
+    );
     let sender = control.clone();
     disconnect.connect_clicked(move |button| {
         sender.stop();
@@ -359,18 +384,25 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                         .body(format!("{}:{}\nПредыдущий отпечаток: {}\nНовый отпечаток: {}\nПодключение остановлено. Проверьте замену сертификата у администратора.",cert.host,cert.port,cert.old_fingerprint,cert.fingerprint)).build();
                         alert.add_response("close", "Закрыть");
                         alert.present(Some(&root));
-                        let _ = reply.send(false);
+                        let _ = reply.send(CertificateDecision::Reject);
                     } else {
                         let alert=adw::AlertDialog::builder().heading("Проверьте сертификат RDP-сервера")
-                        .body(format!("{}:{}\nИмя: {}\nСубъект: {}\nИздатель: {}\nSHA256: {}\n\nСверьте отпечаток с администратором. Разрешить только этот сеанс?",cert.host,cert.port,cert.common,cert.subject,cert.issuer,cert.fingerprint)).build();
-                        alert.add_responses(&[
-                            ("cancel", "Отмена"),
-                            ("accept", "Разрешить этот сеанс"),
-                        ]);
+                        .body(format!("{}:{}\nИмя: {}\nСубъект: {}\nИздатель: {}\nSHA256: {}\n\nСверьте отпечаток с администратором. Разрешить подключение?",cert.host,cert.port,cert.common,cert.subject,cert.issuer,cert.fingerprint)).build();
+                        alert.add_responses(&[("cancel", "Отмена"), ("accept", "Подключиться")]);
                         alert.set_default_response(Some("cancel"));
                         alert.set_close_response("cancel");
+                        let remember =
+                            gtk::CheckButton::with_label("Запомнить сертификат для этого сервера");
+                        alert.set_extra_child(Some(&remember));
                         alert.connect_response(None, move |_, response| {
-                            let _ = reply.send(response == "accept");
+                            let decision = if response != "accept" {
+                                CertificateDecision::Reject
+                            } else if remember.is_active() {
+                                CertificateDecision::Remember
+                            } else {
+                                CertificateDecision::Session
+                            };
+                            let _ = reply.send(decision);
                         });
                         pending_certificate.replace(Some(alert.clone()));
                         alert.present(Some(&root));

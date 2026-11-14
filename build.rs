@@ -3,7 +3,7 @@ fn main() {
     println!("cargo:rerun-if-changed=native/rdp_bridge.h");
     let library = pkg_config::Config::new()
         .atleast_version("3.25")
-        .probe("freerdp3")
+        .probe("freerdp-client3")
         .expect("FreeRDP 3.25+ development headers are required (freerdp3-dev)");
     let winpr = pkg_config::Config::new()
         .atleast_version("3.0")
