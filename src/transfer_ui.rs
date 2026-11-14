@@ -231,7 +231,7 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     dialog.present(Some(parent));
 }
 
-fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortableProfile>) {
+pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortableProfile>) {
     let dialog = adw::Dialog::builder()
         .title("Просмотр набора профилей")
         .content_width(680)

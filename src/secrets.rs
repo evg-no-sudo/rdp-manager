@@ -71,6 +71,39 @@ pub async fn clear(uid: &str) -> Result<(), &'static str> {
         .map_err(explain)
 }
 
+fn webdav_attributes(uid: &str) -> HashMap<&str, &str> {
+    HashMap::from([("kind", "webdav-password"), ("uid", uid)])
+}
+
+pub async fn store_webdav(uid: &str, password: &str) -> Result<(), &'static str> {
+    libsecret::password_store_future(
+        Some(&schema()),
+        webdav_attributes(uid),
+        Some(libsecret::COLLECTION_DEFAULT),
+        "Linux RDP Manager — пароль приложения WebDAV",
+        password,
+    )
+    .await
+    .map_err(explain)?;
+    if lookup_webdav(uid).await?.as_deref().map(String::as_str) != Some(password) {
+        return Err("Хранилище не подтвердило сохранение пароля WebDAV.");
+    }
+    Ok(())
+}
+
+pub async fn lookup_webdav(uid: &str) -> Result<Option<zeroize::Zeroizing<String>>, &'static str> {
+    libsecret::password_lookup_future(Some(&schema()), webdav_attributes(uid))
+        .await
+        .map(|value| value.map(|value| zeroize::Zeroizing::new(value.to_string())))
+        .map_err(explain)
+}
+
+pub async fn clear_webdav(uid: &str) -> Result<(), &'static str> {
+    libsecret::password_clear_future(Some(&schema()), webdav_attributes(uid))
+        .await
+        .map_err(explain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -103,6 +136,14 @@ mod tests {
             assert!(value.as_str() == "replacement-test-value");
             clear(&uid).await.unwrap();
             assert!(!exists(&uid).await.unwrap());
+            store(&uid, "rdp-test-value").await.unwrap();
+            store_webdav(&uid, "webdav-test-token").await.unwrap();
+            let token = lookup_webdav(&uid).await.unwrap().unwrap();
+            assert!(token.as_str() == "webdav-test-token");
+            clear_webdav(&uid).await.unwrap();
+            assert!(lookup_webdav(&uid).await.unwrap().is_none());
+            assert!(exists(&uid).await.unwrap());
+            clear(&uid).await.unwrap();
         });
     }
 }

@@ -6,6 +6,8 @@ mod store;
 mod transfer;
 mod transfer_ui;
 mod ui;
+mod webdav;
+mod webdav_ui;
 
 use adw::prelude::*;
 

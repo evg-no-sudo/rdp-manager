@@ -90,8 +90,19 @@ pub fn create_window(
         .build();
     sidebar_header.append(&title);
     let menu = gtk::gio::Menu::new();
-    menu.append(Some("Импорт Remmina…"), Some("win.import-remmina"));
+    let import_menu = gtk::gio::Menu::new();
+    import_menu.append(
+        Some("Найти подключения Remmina"),
+        Some("win.discover-remmina"),
+    );
+    import_menu.append(
+        Some("Выбрать каталог…"),
+        Some("win.import-remmina-directory"),
+    );
+    import_menu.append(Some("Выбрать файлы…"), Some("win.import-remmina"));
+    menu.append_submenu(Some("Импорт Remmina"), &import_menu);
     menu.append(Some("Обмен через папку…"), Some("win.transfer-profiles"));
+    menu.append(Some("WebDAV / Nextcloud…"), Some("win.webdav"));
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text("Импорт и обмен подключениями")
@@ -120,6 +131,27 @@ pub fn create_window(
         }
     });
     window.add_action(&import);
+    for (name, callback) in [
+        (
+            "discover-remmina",
+            crate::import_ui::discover as fn(&adw::ApplicationWindow, Rc<State>),
+        ),
+        (
+            "import-remmina-directory",
+            crate::import_ui::choose_directory,
+        ),
+        ("webdav", crate::webdav_ui::show),
+    ] {
+        let action = gtk::gio::SimpleAction::new(name, None);
+        let weak_window = window.downgrade();
+        let state = state.clone();
+        action.connect_activate(move |_, _| {
+            if let Some(window) = weak_window.upgrade() {
+                callback(&window, state.clone());
+            }
+        });
+        window.add_action(&action);
+    }
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.set_valign(gtk::Align::Start);

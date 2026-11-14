@@ -7,6 +7,143 @@ use adw::prelude::*;
 use gtk::{gio, glib};
 use std::rc::Rc;
 
+pub fn discover(parent: &adw::ApplicationWindow, state: Rc<State>) {
+    let home = glib::home_dir();
+    let directories = [
+        glib::user_data_dir().join("remmina"),
+        home.join(".remmina"),
+        home.join(".var/app/org.remmina.Remmina/data/remmina"),
+    ]
+    .into_iter()
+    .filter(|p| p.is_dir())
+    .map(gio::File::for_path)
+    .collect();
+    scan_and_preview(parent, state, directories);
+}
+
+pub fn choose_directory(parent: &adw::ApplicationWindow, state: Rc<State>) {
+    let chooser = gtk::FileDialog::builder()
+        .title("Каталог подключений Remmina")
+        .modal(true)
+        .build();
+    let future = chooser.select_folder_future(Some(parent));
+    let weak_parent = parent.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        if let Some(parent) = weak_parent.upgrade() {
+            match future.await {
+                Ok(directory) => scan_and_preview(&parent, state, vec![directory]),
+                Err(error) if error.matches(gtk::DialogError::Dismissed) => {}
+                Err(_) => preview(
+                    &parent,
+                    state,
+                    vec![("Каталог".into(), Err("Не удалось выбрать каталог.".into()))],
+                ),
+            }
+        }
+    });
+}
+
+fn scan_and_preview(
+    parent: &adw::ApplicationWindow,
+    state: Rc<State>,
+    directories: Vec<gio::File>,
+) {
+    let loading = adw::Dialog::builder()
+        .title("Поиск подключений Remmina")
+        .content_width(400)
+        .build();
+    let layout = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    layout.append(&adw::HeaderBar::new());
+    layout.append(
+        &gtk::Spinner::builder()
+            .spinning(true)
+            .margin_bottom(24)
+            .build(),
+    );
+    loading.set_child(Some(&layout));
+    loading.present(Some(parent));
+    let closed = Rc::new(std::cell::Cell::new(false));
+    let cancelled = closed.clone();
+    loading.connect_closed(move |_| cancelled.set(true));
+    let weak_parent = parent.downgrade();
+    glib::MainContext::default().spawn_local(async move {
+        let entries = scan(directories).await;
+        if !closed.get() {
+            loading.close();
+            if let Some(parent) = weak_parent.upgrade() {
+                preview(&parent, state, entries);
+            }
+        }
+    });
+}
+
+async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<Profile>)> {
+    let mut entries = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut count = 0;
+    for directory in directories {
+        if !visited.insert(directory.uri().to_string()) {
+            continue;
+        }
+        let enumerator = match directory
+            .enumerate_children_future(
+                "standard::name,standard::type",
+                gio::FileQueryInfoFlags::NOFOLLOW_SYMLINKS,
+                glib::Priority::DEFAULT,
+            )
+            .await
+        {
+            Ok(enumerator) => enumerator,
+            Err(_) => {
+                entries.push((
+                    "Каталог Remmina".into(),
+                    Err("Не удалось прочитать каталог.".into()),
+                ));
+                continue;
+            }
+        };
+        loop {
+            let files = match enumerator
+                .next_files_future(64, glib::Priority::DEFAULT)
+                .await
+            {
+                Ok(files) => files,
+                Err(_) => {
+                    entries.push((
+                        "Каталог Remmina".into(),
+                        Err("Ошибка чтения списка файлов.".into()),
+                    ));
+                    break;
+                }
+            };
+            if files.is_empty() {
+                break;
+            }
+            for info in files {
+                if info.file_type() != gio::FileType::Regular
+                    || info.name().extension() != Some(std::ffi::OsStr::new("remmina"))
+                {
+                    continue;
+                }
+                count += 1;
+                if count > 2000 {
+                    return vec![("Каталог Remmina".into(), Err("Найдено более 2000 файлов. Выберите меньший каталог; импорт не выполнен.".into()))];
+                }
+                let file = directory.child(info.name());
+                entries.push((
+                    info.name().to_string_lossy().into_owned(),
+                    read_profile(&file).await,
+                ));
+            }
+        }
+        let _ = enumerator.close_future(glib::Priority::DEFAULT).await;
+    }
+    if entries.is_empty() {
+        entries.push(("Поиск Remmina".into(), Err("Файлы .remmina не найдены. Выберите каталог вручную. Подкаталоги и символические ссылки не просматриваются.".into())));
+    }
+    entries
+}
+
 pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
     let filter = gtk::FileFilter::new();
     filter.set_name(Some("Профили Remmina (*.remmina)"));
@@ -40,14 +177,14 @@ pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
                 return;
             }
         };
-        if files.n_items() > 200 {
+        if files.n_items() > 2000 {
             if let Some(parent) = weak_parent.upgrade() {
                 preview(
                     &parent,
                     state,
                     vec![(
                         "Выбор файлов".into(),
-                        Err("Выберите не более 200 файлов за один импорт.".into()),
+                        Err("Выберите не более 2000 файлов за один импорт.".into()),
                     )],
                 );
             }
@@ -147,6 +284,19 @@ fn preview(
         }
         list.append(&row);
     }
+    let candidates = Rc::new(candidates);
+    let selection = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    for (text, active) in [("Выбрать все", true), ("Снять отметки", false)] {
+        let button = gtk::Button::with_label(text);
+        let candidates = candidates.clone();
+        button.connect_clicked(move |_| {
+            for (check, _) in candidates.iter() {
+                check.set_active(active);
+            }
+        });
+        selection.append(&button);
+    }
+    content.append(&selection);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
@@ -172,7 +322,7 @@ fn preview(
                 profiles_ui::refresh(&state);
                 status.set_text(&format!("Добавлено: {added}. Дубликатов пропущено: {}.", profiles.len() - added));
                 button.set_sensitive(false);
-                for (check, _) in &candidates { check.set_sensitive(false); }
+                for (check, _) in candidates.iter() { check.set_sensitive(false); }
             }
             Err(_) => {
                 status.set_text("Импорт не выполнен. База данных недоступна или произошла ошибка записи; изменения отменены.");
@@ -182,4 +332,46 @@ fn preview(
     layout.append(&content);
     dialog.set_child(Some(&layout));
     dialog.present(Some(parent));
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn folder_scan_lists_valid_and_invalid_files_without_following_links() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(
+            directory.path().join("office.remmina"),
+            "[remmina]\nprotocol=RDP\nname=Office\nserver=server.test",
+        )
+        .unwrap();
+        std::fs::write(
+            directory.path().join("ssh.remmina"),
+            "[remmina]\nprotocol=SSH\nserver=server.test",
+        )
+        .unwrap();
+        std::fs::write(directory.path().join("broken.remmina"), "broken").unwrap();
+        std::fs::write(directory.path().join("unrelated.txt"), "not imported").unwrap();
+        let nested = directory.path().join("nested");
+        std::fs::create_dir(&nested).unwrap();
+        std::fs::write(
+            nested.join("nested.remmina"),
+            "[remmina]\nprotocol=RDP\nserver=other.test",
+        )
+        .unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(
+            directory.path().join("office.remmina"),
+            directory.path().join("link.remmina"),
+        )
+        .unwrap();
+        let folder = gio::File::for_path(directory.path());
+        let entries = glib::MainContext::new().block_on(scan(vec![folder.clone(), folder]));
+        assert_eq!(entries.len(), 3);
+        assert_eq!(
+            entries.iter().filter(|(_, result)| result.is_ok()).count(),
+            1
+        );
+    }
 }
