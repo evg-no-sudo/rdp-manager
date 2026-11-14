@@ -56,7 +56,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         .title(if profile.id.is_some() {
             "Профиль подключения"
         } else {
-            "Новый профиль"
+            "Новое подключение"
         })
         .content_width(520)
         .content_height(620)

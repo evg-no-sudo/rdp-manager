@@ -72,27 +72,44 @@ pub fn create_window(
     sidebar.set_margin_top(16);
     sidebar.set_margin_start(16);
     sidebar.set_margin_end(16);
-    sidebar.append(&gtk::Label::new(Some("Профили подключений")));
-    let new_profile = gtk::Button::with_label("Создать профиль");
+    let sidebar_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let title = gtk::Label::builder()
+        .label("Подключения")
+        .xalign(0.0)
+        .hexpand(true)
+        .build();
+    sidebar_header.append(&title);
+    let menu = gtk::gio::Menu::new();
+    menu.append(Some("Импорт Remmina…"), Some("win.import-remmina"));
+    menu.append(Some("Обмен через папку…"), Some("win.transfer-profiles"));
+    let more = gtk::MenuButton::builder()
+        .icon_name("view-more-symbolic")
+        .tooltip_text("Импорт и обмен подключениями")
+        .menu_model(&menu)
+        .build();
+    more.add_css_class("flat");
+    sidebar_header.append(&more);
+    sidebar.append(&sidebar_header);
+    let new_profile = gtk::Button::with_label("Новое подключение");
     sidebar.append(&new_profile);
-    let import = gtk::Button::with_label("Импорт Remmina…");
-    sidebar.append(&import);
-    let transfer = gtk::Button::with_label("Обмен через папку…");
-    sidebar.append(&transfer);
+    let transfer = gtk::gio::SimpleAction::new("transfer-profiles", None);
     let weak_window = window.downgrade();
     let transfer_state = state.clone();
-    transfer.connect_clicked(move |_| {
+    transfer.connect_activate(move |_, _| {
         if let Some(window) = weak_window.upgrade() {
             crate::transfer_ui::show(&window, transfer_state.clone());
         }
     });
+    window.add_action(&transfer);
+    let import = gtk::gio::SimpleAction::new("import-remmina", None);
     let weak_window = window.downgrade();
     let import_state = state.clone();
-    import.connect_clicked(move |_| {
+    import.connect_activate(move |_, _| {
         if let Some(window) = weak_window.upgrade() {
             crate::import_ui::choose(&window, import_state.clone());
         }
     });
+    window.add_action(&import);
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("boxed-list");
