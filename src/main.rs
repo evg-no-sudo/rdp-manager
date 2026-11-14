@@ -2,6 +2,8 @@ mod import_ui;
 mod profiles_ui;
 mod remmina;
 mod secrets;
+mod sftp;
+mod sftp_ui;
 mod store;
 mod transfer;
 mod transfer_ui;

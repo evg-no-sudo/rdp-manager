@@ -92,11 +92,8 @@ fn directory_url(input: &str) -> Result<Url> {
     Ok(url)
 }
 
-#[derive(Clone, Debug)]
-pub struct Snapshot {
-    pub name: String,
-    pub modified: String,
-}
+use crate::transfer::snapshot_name;
+pub use crate::transfer::Snapshot;
 
 pub struct Dav {
     client: Client,
@@ -151,13 +148,7 @@ impl Dav {
         if bytes.len() > transfer::MAX_BYTES {
             return Err("Набор превышает 4 МиБ.".into());
         }
-        let timestamp = gtk::glib::DateTime::now_utc()
-            .and_then(|time| time.format("%Y%m%dT%H%M%SZ"))
-            .map_err(|_| "Не удалось определить время для имени набора.")?;
-        let name = format!(
-            "rdp-profiles-{timestamp}-{}.rdpm",
-            gtk::glib::uuid_string_random()
-        );
+        let name = transfer::new_snapshot_name()?;
         self.put(&name, bytes)?;
         Ok(name)
     }
@@ -198,15 +189,6 @@ impl Dav {
             .join(name)
             .map_err(|_| "Некорректный адрес набора.".into())
     }
-}
-
-fn snapshot_name(name: &str) -> bool {
-    name.starts_with("rdp-profiles-")
-        && name.ends_with(".rdpm")
-        && name.len() <= 120
-        && name[..name.len() - 5]
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
 }
 
 fn bounded(response: Response, limit: usize) -> Result<Vec<u8>> {

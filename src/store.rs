@@ -72,7 +72,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 2 {
+        if version > 3 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -112,7 +112,42 @@ impl Store {
                 PRAGMA user_version = 2;")?;
             transaction.commit()?;
         }
+        if version < 3 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch(
+                "CREATE TABLE trusted_sftp_hosts (
+                host TEXT NOT NULL, port INTEGER NOT NULL CHECK(port BETWEEN 1 AND 65535),
+                public_key BLOB NOT NULL, PRIMARY KEY(host,port)
+            ); PRAGMA user_version=3;",
+            )?;
+            transaction.commit()?;
+        }
         Ok(Self(connection))
+    }
+
+    pub fn sftp_host_key(&self, host: &str, port: u16) -> Result<Option<Vec<u8>>> {
+        use rusqlite::OptionalExtension;
+        Ok(self
+            .0
+            .query_row(
+                "SELECT public_key FROM trusted_sftp_hosts WHERE host=?1 AND port=?2",
+                params![host, port],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
+    pub fn trust_sftp_host(&self, host: &str, port: u16, key: &[u8]) -> Result<()> {
+        let transaction = self.0.unchecked_transaction()?;
+        transaction.execute(
+            "INSERT OR IGNORE INTO trusted_sftp_hosts(host,port,public_key) VALUES(?1,?2,?3)",
+            params![host, port, key],
+        )?;
+        if self.sftp_host_key(host, port)?.as_deref() != Some(key) {
+            return Err("Ключ сервера уже изменился. Существующее доверие не заменено.".into());
+        }
+        transaction.commit()?;
+        Ok(())
     }
 
     pub fn profiles(&self) -> Result<Vec<Profile>> {
@@ -299,6 +334,24 @@ mod tests {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "user_version", 99)?;
         assert!(Store::initialize(connection).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn sftp_trust_is_device_local_port_specific_and_cannot_be_silently_replaced() -> Result<()> {
+        let store = Store::initialize(Connection::open_in_memory()?)?;
+        assert!(store.sftp_host_key("server.test", 22)?.is_none());
+        store.trust_sftp_host("server.test", 22, b"public-key-one")?;
+        store.trust_sftp_host("server.test", 22, b"public-key-one")?;
+        assert!(store
+            .trust_sftp_host("server.test", 22, b"public-key-two")
+            .is_err());
+        assert_eq!(
+            store.sftp_host_key("server.test", 22)?.as_deref(),
+            Some(b"public-key-one".as_slice())
+        );
+        assert!(store.sftp_host_key("server.test", 2222)?.is_none());
+        assert!(store.profiles()?.is_empty());
         Ok(())
     }
 

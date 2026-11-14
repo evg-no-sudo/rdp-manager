@@ -18,6 +18,30 @@ pub type Result<T> = std::result::Result<T, String>;
 const MAGIC: &[u8; 8] = b"RDPMENC\x01";
 const HEADER: usize = 8 + 16 + 24;
 pub const MAX_BYTES: usize = 4 * 1024 * 1024;
+pub fn snapshot_name(name: &str) -> bool {
+    name.starts_with("rdp-profiles-")
+        && name.ends_with(".rdpm")
+        && name.len() <= 120
+        && name[..name.len() - 5]
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+}
+
+pub fn new_snapshot_name() -> Result<String> {
+    let timestamp = gtk::glib::DateTime::now_utc()
+        .and_then(|time| time.format("%Y%m%dT%H%M%SZ"))
+        .map_err(|_| "Не удалось определить время для имени набора.")?;
+    Ok(format!(
+        "rdp-profiles-{timestamp}-{}.rdpm",
+        gtk::glib::uuid_string_random()
+    ))
+}
+
+#[derive(Clone, Debug)]
+pub struct Snapshot {
+    pub name: String,
+    pub modified: String,
+}
 const AUTH_FAILED: &str = "Неверный мастер-пароль или файл повреждён. Данные не применены.";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

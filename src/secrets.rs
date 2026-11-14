@@ -104,6 +104,39 @@ pub async fn clear_webdav(uid: &str) -> Result<(), &'static str> {
         .map_err(explain)
 }
 
+fn sftp_attributes(uid: &str) -> HashMap<&str, &str> {
+    HashMap::from([("kind", "sftp-auth-secret"), ("uid", uid)])
+}
+
+pub async fn store_sftp(uid: &str, secret: &str) -> Result<(), &'static str> {
+    libsecret::password_store_future(
+        Some(&schema()),
+        sftp_attributes(uid),
+        Some(libsecret::COLLECTION_DEFAULT),
+        "Linux RDP Manager — пароль/passphrase SFTP",
+        secret,
+    )
+    .await
+    .map_err(explain)?;
+    if lookup_sftp(uid).await?.as_deref().map(String::as_str) != Some(secret) {
+        return Err("Хранилище не подтвердило сохранение секрета SFTP.");
+    }
+    Ok(())
+}
+
+pub async fn lookup_sftp(uid: &str) -> Result<Option<zeroize::Zeroizing<String>>, &'static str> {
+    libsecret::password_lookup_future(Some(&schema()), sftp_attributes(uid))
+        .await
+        .map(|value| value.map(|value| zeroize::Zeroizing::new(value.to_string())))
+        .map_err(explain)
+}
+
+pub async fn clear_sftp(uid: &str) -> Result<(), &'static str> {
+    libsecret::password_clear_future(Some(&schema()), sftp_attributes(uid))
+        .await
+        .map_err(explain)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,6 +173,11 @@ mod tests {
             store_webdav(&uid, "webdav-test-token").await.unwrap();
             let token = lookup_webdav(&uid).await.unwrap().unwrap();
             assert!(token.as_str() == "webdav-test-token");
+            store_sftp(&uid, "sftp-test-passphrase").await.unwrap();
+            assert!(lookup_sftp(&uid).await.unwrap().unwrap().as_str() == "sftp-test-passphrase");
+            clear_sftp(&uid).await.unwrap();
+            assert!(lookup_sftp(&uid).await.unwrap().is_none());
+            assert!(lookup_webdav(&uid).await.unwrap().is_some());
             clear_webdav(&uid).await.unwrap();
             assert!(lookup_webdav(&uid).await.unwrap().is_none());
             assert!(exists(&uid).await.unwrap());

@@ -103,6 +103,7 @@ pub fn create_window(
     menu.append_submenu(Some("Импорт Remmina"), &import_menu);
     menu.append(Some("Обмен через папку…"), Some("win.transfer-profiles"));
     menu.append(Some("WebDAV / Nextcloud…"), Some("win.webdav"));
+    menu.append(Some("SFTP / SSH…"), Some("win.sftp"));
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
         .tooltip_text("Импорт и обмен подключениями")
@@ -141,6 +142,7 @@ pub fn create_window(
             crate::import_ui::choose_directory,
         ),
         ("webdav", crate::webdav_ui::show),
+        ("sftp", crate::sftp_ui::show),
     ] {
         let action = gtk::gio::SimpleAction::new(name, None);
         let weak_window = window.downgrade();
