@@ -29,6 +29,7 @@ pub fn parse(data: &str) -> Result<Profile> {
     }
     let profile = Profile {
         id: None,
+        uid: gtk::glib::uuid_string_random().into(),
         name,
         host,
         port,
@@ -83,6 +84,7 @@ mod tests {
             profile,
             Profile {
                 id: None,
+                uid: profile.uid.clone(),
                 name: "Работа".into(),
                 host: "host.test".into(),
                 port: 3390,

@@ -6,6 +6,7 @@ pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Profile {
     pub id: Option<i64>,
+    pub uid: String,
     pub name: String,
     pub host: String,
     pub port: u16,
@@ -17,6 +18,7 @@ impl Default for Profile {
     fn default() -> Self {
         Self {
             id: None,
+            uid: gtk::glib::uuid_string_random().into(),
             name: String::new(),
             host: String::new(),
             port: 3389,
@@ -28,6 +30,9 @@ impl Default for Profile {
 
 impl Profile {
     pub fn validate(&self) -> Result<()> {
+        if !gtk::glib::uuid_string_is_valid(&self.uid) {
+            return Err("Некорректный идентификатор профиля.".into());
+        }
         if self.name.trim().is_empty() || self.host.trim().is_empty() {
             return Err("Заполните название и сервер.".into());
         }
@@ -67,7 +72,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 1 {
+        if version > 2 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -85,16 +90,39 @@ impl Store {
             )?;
             transaction.commit()?;
         }
+        if version < 2 {
+            let transaction = connection.transaction()?;
+            transaction.execute_batch("ALTER TABLE profiles ADD COLUMN uid TEXT;")?;
+            let ids = {
+                let mut query = transaction.prepare("SELECT id FROM profiles")?;
+                let rows = query.query_map([], |row| row.get::<_, i64>(0))?;
+                rows.collect::<std::result::Result<Vec<_>, _>>()?
+            };
+            for id in ids {
+                transaction.execute(
+                    "UPDATE profiles SET uid=?1 WHERE id=?2",
+                    params![gtk::glib::uuid_string_random().as_str(), id],
+                )?;
+            }
+            transaction.execute_batch("CREATE UNIQUE INDEX profiles_uid ON profiles(uid);
+                CREATE TRIGGER profiles_uid_required_insert BEFORE INSERT ON profiles
+                WHEN NEW.uid IS NULL OR length(NEW.uid)=0 BEGIN SELECT RAISE(ABORT, 'profile uid required'); END;
+                CREATE TRIGGER profiles_uid_immutable BEFORE UPDATE OF uid ON profiles
+                WHEN NEW.uid IS NOT OLD.uid BEGIN SELECT RAISE(ABORT, 'profile uid immutable'); END;
+                PRAGMA user_version = 2;")?;
+            transaction.commit()?;
+        }
         Ok(Self(connection))
     }
 
     pub fn profiles(&self) -> Result<Vec<Profile>> {
         let mut query = self.0.prepare(
-            "SELECT id, name, host, port, username, domain FROM profiles ORDER BY name COLLATE NOCASE, id",
+            "SELECT id, name, host, port, username, domain, uid FROM profiles ORDER BY name COLLATE NOCASE, id",
         )?;
         let rows = query.query_map([], |row| {
             Ok(Profile {
                 id: Some(row.get(0)?),
+                uid: row.get(6)?,
                 name: row.get(1)?,
                 host: row.get(2)?,
                 port: row.get(3)?,
@@ -105,37 +133,40 @@ impl Store {
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
-    pub fn save(&self, profile: &Profile) -> Result<()> {
+    pub fn save(&self, profile: &Profile) -> Result<i64> {
         profile.validate()?;
         let values = params![
             profile.name,
             profile.host,
             profile.port,
             profile.username,
-            profile.domain
+            profile.domain,
+            profile.uid
         ];
         if let Some(id) = profile.id {
             let count = self.0.execute(
-                "UPDATE profiles SET name=?1, host=?2, port=?3, username=?4, domain=?5 WHERE id=?6",
+                "UPDATE profiles SET name=?1, host=?2, port=?3, username=?4, domain=?5 WHERE id=?6 AND uid=?7",
                 params![
                     profile.name,
                     profile.host,
                     profile.port,
                     profile.username,
                     profile.domain,
-                    id
+                    id,
+                    profile.uid
                 ],
             )?;
             if count == 0 {
                 return Err("Профиль уже удалён. Закройте форму и обновите список.".into());
             }
+            Ok(id)
         } else {
             self.0.execute(
-                "INSERT INTO profiles(name,host,port,username,domain) VALUES(?1,?2,?3,?4,?5)",
+                "INSERT INTO profiles(name,host,port,username,domain,uid) VALUES(?1,?2,?3,?4,?5,?6)",
                 values,
             )?;
+            Ok(self.0.last_insert_rowid())
         }
-        Ok(())
     }
 
     /// Atomically add profiles, skipping exact identities already in the database/batch.
@@ -147,12 +178,12 @@ impl Store {
         let mut added = 0;
         for p in profiles {
             added += transaction.execute(
-                "INSERT INTO profiles(name,host,port,username,domain)
-                 SELECT ?1,?2,?3,?4,?5 WHERE NOT EXISTS (
+                "INSERT INTO profiles(name,host,port,username,domain,uid)
+                 SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS (
                      SELECT 1 FROM profiles WHERE name=?1 AND host=?2 COLLATE NOCASE
                      AND port=?3 AND username=?4 AND domain=?5
                  )",
-                params![p.name, p.host, p.port, p.username, p.domain],
+                params![p.name, p.host, p.port, p.username, p.domain, p.uid],
             )?;
         }
         transaction.commit()?;
@@ -205,6 +236,37 @@ mod tests {
         let connection = Connection::open_in_memory()?;
         connection.pragma_update(None, "user_version", 99)?;
         assert!(Store::initialize(connection).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn migrates_existing_profiles_to_stable_unique_identities() -> Result<()> {
+        let connection = Connection::open_in_memory()?;
+        connection.execute_batch("CREATE TABLE profiles(id INTEGER PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, username TEXT NOT NULL, domain TEXT NOT NULL);
+            INSERT INTO profiles VALUES(1,'Office','server.test',3389,'alice','EXAMPLE');
+            INSERT INTO profiles VALUES(2,'Other','other.test',3389,'bob','');
+            PRAGMA user_version=1;")?;
+        let store = Store::initialize(connection)?;
+        let mut profiles = store.profiles()?;
+        assert_eq!(profiles.len(), 2);
+        assert_ne!(profiles[0].uid, profiles[1].uid);
+        assert!(profiles
+            .iter()
+            .all(|p| gtk::glib::uuid_string_is_valid(&p.uid)));
+        let uid = profiles[0].uid.clone();
+        profiles[0].name = "Renamed".into();
+        store.save(&profiles[0])?;
+        let p = store
+            .profiles()?
+            .into_iter()
+            .find(|p| p.uid == uid)
+            .unwrap();
+        assert_eq!(p.name, "Renamed");
+        assert_eq!(p.username, "alice");
+        assert_eq!(p.domain, "EXAMPLE");
+        let mut invalid = p;
+        invalid.uid = gtk::glib::uuid_string_random().into();
+        assert!(store.save(&invalid).is_err());
         Ok(())
     }
 

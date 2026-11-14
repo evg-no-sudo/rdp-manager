@@ -1,10 +1,11 @@
 use crate::store::{Profile, Store};
 use adw::prelude::*;
-use std::{cell::RefCell, rc::Rc};
+use std::{cell::RefCell, collections::HashSet, rc::Rc};
 
 pub struct State {
     pub store: Store,
     pub lists: RefCell<Vec<gtk::glib::WeakRef<gtk::ListBox>>>,
+    operations: RefCell<HashSet<String>>,
 }
 
 impl State {
@@ -12,7 +13,29 @@ impl State {
         Rc::new(Self {
             store,
             lists: RefCell::new(Vec::new()),
+            operations: RefCell::new(HashSet::new()),
         })
+    }
+
+    pub fn operation(self: &Rc<Self>, uid: &str) -> Option<Operation> {
+        if !self.operations.borrow_mut().insert(uid.into()) {
+            return None;
+        }
+        Some(Operation {
+            state: self.clone(),
+            uid: uid.into(),
+        })
+    }
+}
+
+pub struct Operation {
+    state: Rc<State>,
+    uid: String,
+}
+
+impl Drop for Operation {
+    fn drop(&mut self) {
+        self.state.operations.borrow_mut().remove(&self.uid);
     }
 }
 
