@@ -30,6 +30,12 @@ int main(int argc,char** argv){
     Probe probe={.expected=0x11};
     RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,&probe,capture,cert);
     assert(bridge&&rdp_manager_connect(bridge));
+    rdp_manager_prepare_input(bridge);
+    assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
+    rdp_manager_wake(bridge);
+    assert(WaitForSingleObject(bridge->input_event,0)==WAIT_OBJECT_0);
+    rdp_manager_prepare_input(bridge);
+    assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
     rdpContext* ctx=bridge->instance->context;
     void* surface_data=NULL;
     RdpgfxClientContext context={.handle=&surface_data,.SetSurfaceData=set_surface,.GetSurfaceData=get_surface,.GetSurfaceIds=get_ids};

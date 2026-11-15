@@ -46,6 +46,8 @@ extern "C" {
     fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
     fn rdp_manager_input(native: *mut Native, kind: u32, flags: u16, a: u16, b: u16) -> c_int;
     fn rdp_manager_cancel(native: *mut Native);
+    fn rdp_manager_wake(native: *mut Native);
+    fn rdp_manager_prepare_input(native: *mut Native);
     fn rdp_manager_error(native: *mut Native) -> u32;
     fn rdp_manager_error_name(native: *mut Native) -> *const c_char;
     fn rdp_manager_free(native: *mut Native);
@@ -154,10 +156,19 @@ pub struct Control {
     frame: Mutex<Option<Frame>>,
 }
 impl Control {
+    fn wake_input(&self) {
+        if let Ok(native) = self.native.lock() {
+            if let Some(native) = *native {
+                unsafe {
+                    rdp_manager_wake(native as *mut Native);
+                }
+            }
+        }
+    }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
         // Holding this mutex excludes freeing the pointer. The C operation only
-        // sets FreeRDP's thread-safe abort event; all other native calls stay on the owner.
+        // requests cancellation/wake; protocol and input calls stay on the owner.
         if let Ok(native) = self.native.lock() {
             if let Some(native) = *native {
                 unsafe {
@@ -171,17 +182,27 @@ impl Control {
             return;
         }
         match self.tx.try_send(input) {
-            Ok(()) | Err(TrySendError::Disconnected(_)) => {}
+            Ok(()) => self.wake_input(),
+            Err(TrySendError::Disconnected(_)) => {}
             Err(TrySendError::Full(_)) => {
                 self.overflow.store(true, Ordering::Release);
                 self.stop();
             }
         }
     }
+    pub fn chord(&self, codes: &[u16]) {
+        for &code in codes {
+            self.send(Input::scan(code, true, false));
+        }
+        for &code in codes.iter().rev() {
+            self.send(Input::scan(code, false, false));
+        }
+    }
     pub fn motion(&self, x: u16, y: u16) {
         if let Ok(mut motion) = self.motion.lock() {
             *motion = Some(Input::mouse(0x0800, x, y));
         }
+        self.wake_input();
     }
     pub fn take_frame(&self) -> Option<Frame> {
         self.frame.lock().ok()?.take()
@@ -432,6 +453,9 @@ fn run(
         let trace = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
         let mut last_trace = std::time::Instant::now() - Duration::from_secs(3);
         'session: while !control.stopped.load(Ordering::Acquire) {
+            unsafe {
+                rdp_manager_prepare_input(native);
+            }
             if trace && last_trace.elapsed() >= Duration::from_secs(3) {
                 let mut output = [0i8; 512];
                 unsafe {

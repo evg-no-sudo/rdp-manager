@@ -1,5 +1,5 @@
 use crate::{
-    rdp::{self, CertificateDecision, Config, Event, Input},
+    rdp::{self, CertificateDecision, Config, Event},
     rdp_input, secrets,
     store::Profile,
     ui::State,
@@ -223,7 +223,17 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let capture = gtk::ToggleButton::with_label("Захват клавиш");
     capture.set_tooltip_text(Some("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора."));
     toolbar.append(&capture);
-    let text_mode = gtk::CheckButton::with_label("Unicode");
+    let text_mode = gtk::CheckButton::with_label("Текст Unicode по локальной раскладке");
+    let keyboard_mode = gtk::Label::new(Some("Раскладка: сервер"));
+    keyboard_mode.add_css_class("dim-label");
+    toolbar.append(&keyboard_mode);
+    text_mode.connect_toggled(move |button| {
+        keyboard_mode.set_label(if button.is_active() {
+            "Раскладка: локальная"
+        } else {
+            "Раскладка: сервер"
+        });
+    });
     text_mode.set_tooltip_text(Some("Передача текста по локальной раскладке. Для xrdp оставьте выключенным и переключайте раскладку на удалённом ПК."));
     let options = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
@@ -303,6 +313,30 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         &capture,
         &text_mode,
     );
+    options_box.append(&gtk::Label::new(Some("Переключить раскладку на сервере")));
+    for (label, codes) in [
+        ("Alt+Shift", vec![56, 42]),
+        ("Ctrl+Shift", vec![29, 42]),
+        ("Win+Space", vec![0x15b, 57]),
+    ] {
+        let button = gtk::Button::with_label(label);
+        button.set_tooltip_text(Some(
+            "Сработает, если это сочетание настроено на удалённом ПК",
+        ));
+        let sender = control.clone();
+        let weak_picture = picture.downgrade();
+        let weak_popover = popover.downgrade();
+        button.connect_clicked(move |_| {
+            if let Some(popover) = weak_popover.upgrade() {
+                popover.popdown();
+            }
+            if let Some(picture) = weak_picture.upgrade() {
+                picture.grab_focus();
+            }
+            sender.chord(&codes);
+        });
+        options_box.append(&button);
+    }
     let sender = control.clone();
     disconnect.connect_clicked(move |button| {
         sender.stop();
@@ -310,16 +344,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     });
     let sender = control.clone();
     cad.connect_clicked(move |_| {
-        for (code, down) in [
-            (29, true),
-            (56, true),
-            (0x153, true),
-            (0x153, false),
-            (56, false),
-            (29, false),
-        ] {
-            sender.send(Input::scan(code, down, false));
-        }
+        sender.chord(&[29, 56, 0x153]);
     });
     let sender = control.clone();
     let state_on_close = state.clone();

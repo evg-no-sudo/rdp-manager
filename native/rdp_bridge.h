@@ -15,8 +15,12 @@ int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);
 void rdp_manager_graphics_stats(RdpBridge*, char*, size_t);
 int rdp_manager_input(RdpBridge*, uint32_t kind, uint16_t flags, uint16_t a, uint16_t b);
-/* The only operation allowed concurrently with connect/poll: sets the abort event. */
+/* Thread-safe cancellation; wakes an active poll or aborts a pending connect. */
 void rdp_manager_cancel(RdpBridge*);
+/* Thread-safe input notification; lifetime protected by the Rust native mutex. */
+void rdp_manager_wake(RdpBridge*);
+/* Owner only: reset notification BEFORE draining the input queues. */
+void rdp_manager_prepare_input(RdpBridge*);
 uint32_t rdp_manager_error(RdpBridge*);
 const char* rdp_manager_error_name(RdpBridge*);
 void rdp_manager_free(RdpBridge*);

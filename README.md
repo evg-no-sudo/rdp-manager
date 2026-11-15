@@ -161,3 +161,6 @@ FreeRDP/WinPR 3.32.2 — проверенная версия. Приложени
 Документация UI: https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/class.TabView.html
 
 Будущие планы после Linux: [ROADMAP.md](ROADMAP.md) (включая Android).
+
+Оптимизированный запуск с отдельной FreeRDP H.264/FFmpeg, аппаратным запросом
+и программным резервным режимом: [docs/H264.md](docs/H264.md).

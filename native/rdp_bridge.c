@@ -22,6 +22,8 @@
 
 struct RdpBridge {
     freerdp* instance;
+    HANDLE input_event;
+    atomic_uint_fast64_t input_wakes, input_scans, input_unicode;
     void* opaque;
     RdpFrame frame;
     RdpCertificate certificate;
@@ -131,6 +133,10 @@ static BOOL load_channels(freerdp* instance) {
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportVideoOptimized, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportGeometryTracking, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportDisplayControl, FALSE)) return FALSE;
+    if (freerdp_static_channel_collection_find(ctx->settings, "rdpsnd") &&
+        !freerdp_client_del_static_channel(ctx->settings, "rdpsnd")) return FALSE;
+    if (freerdp_dynamic_channel_collection_find(ctx->settings, "rdpsnd") &&
+        !freerdp_client_del_dynamic_channel(ctx->settings, "rdpsnd")) return FALSE;
     if (!freerdp_client_load_addins(ctx->channels, ctx->settings)) return FALSE;
     bridge_of(ctx)->channel_loads++;
     return TRUE;
@@ -282,6 +288,9 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     atomic_init(&bridge->connected, 0);
     atomic_init(&bridge->frame_dirty, 0);
     atomic_init(&bridge->paints, 0);
+    atomic_init(&bridge->input_wakes, 0);
+    atomic_init(&bridge->input_scans, 0);
+    atomic_init(&bridge->input_unicode, 0);
     InitializeCriticalSection(&bridge->graphics_lock);
     bridge->opaque = opaque; bridge->frame = frame; bridge->certificate = certificate;
     bridge->instance = freerdp_new();
@@ -297,6 +306,8 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     instance->AuthenticateEx = authenticate;
     instance->VerifyCertificateEx = verify_certificate;
     instance->VerifyChangedCertificateEx = verify_changed_certificate;
+    bridge->input_event = CreateEvent(NULL, TRUE, FALSE, NULL);
+    if (!bridge->input_event) goto fail;
     rdpSettings* settings = instance->context->settings;
 #define SET_STRING(key, value) if (!freerdp_settings_set_string(settings, key, value)) goto fail
 #define SET_BOOL(key, value) if (!freerdp_settings_set_bool(settings, key, value)) goto fail
@@ -317,10 +328,15 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_AutoAcceptCertificate, FALSE);
     SET_BOOL(FreeRDP_AutoDenyCertificate, FALSE);
     SET_BOOL(FreeRDP_CertificateCallbackPreferPEM, TRUE);
-    SET_BOOL(FreeRDP_SoftwareGdi, TRUE);
     SET_BOOL(FreeRDP_SupportGraphicsPipeline, TRUE);
     const char* build = freerdp_get_build_config();
     const BOOL h264 = build && strstr(build, "WITH_GFX_H264=ON");
+    const char* decoder_mode = getenv("RDP_MANAGER_H264_DECODER");
+    const BOOL hw_request = h264 && strstr(build, "WITH_FFMPEG_HWACCEL=ON") &&
+        (!decoder_mode || strcmp(decoder_mode, "software") != 0);
+    /* GDI initialization stays ours; FreeRDP uses this setting to request GPU H264.
+       The framebuffer still passes through CPU memory, not a zero-copy renderer. */
+    SET_BOOL(FreeRDP_SoftwareGdi, !hw_request);
     SET_BOOL(FreeRDP_GfxH264, h264);
     SET_BOOL(FreeRDP_GfxAVC444, h264);
     SET_BOOL(FreeRDP_GfxAVC444v2, h264);
@@ -352,11 +368,14 @@ int rdp_manager_poll(RdpBridge* bridge) {
     rdpContext* ctx = bridge->instance->context;
     if (atomic_load(&bridge->cancelled) || freerdp_shall_disconnect_context(ctx)) return 0;
     HANDLE handles[64] = { 0 };
-    DWORD count = freerdp_get_event_handles(ctx, handles, 64);
+    DWORD count = freerdp_get_event_handles(ctx, handles, 63);
     if (!count) return -1;
+    DWORD input_index = count;
+    handles[count++] = bridge->input_event;
     DWORD result = WaitForMultipleObjects(count, handles, FALSE, 15);
     if (result == WAIT_FAILED) return -1;
-    if (result != WAIT_TIMEOUT && !freerdp_check_event_handles(ctx)) return 0;
+    if (result == WAIT_OBJECT_0 + input_index) atomic_fetch_add(&bridge->input_wakes, 1);
+    if (result != WAIT_TIMEOUT && result != WAIT_OBJECT_0 + input_index && !freerdp_check_event_handles(ctx)) return 0;
     return publish_frame(bridge, FALSE);
 }
 static int publish_frame(RdpBridge* bridge, BOOL boundary) {
@@ -385,11 +404,13 @@ int rdp_manager_input(RdpBridge* bridge, uint32_t kind, uint16_t flags, uint16_t
     rdpInput* input = bridge->instance->context->input;
     switch (kind) {
         case 0: {
+            atomic_fetch_add(&bridge->input_scans, 1);
             if(!freerdp_input_send_keyboard_event(input,flags,(UINT8)a))return 0;
             bridge->held_keys[(a&0xFF)+((flags&KBD_FLAGS_EXTENDED)?256:0)]=(flags&KBD_FLAGS_RELEASE)?0:1;
             return 1;
         }
         case 1: {
+            atomic_fetch_add(&bridge->input_unicode, 1);
             if(!freerdp_input_send_unicode_keyboard_event(input,flags,a))return 0;
             bridge->unicode_down=(flags&KBD_FLAGS_RELEASE)?0:1;bridge->last_unicode=a;return 1;
         }
@@ -412,7 +433,10 @@ int rdp_manager_input(RdpBridge* bridge, uint32_t kind, uint16_t flags, uint16_t
         default: return 0;
     }
 }
+void rdp_manager_prepare_input(RdpBridge* bridge) { (void)ResetEvent(bridge->input_event); }
+void rdp_manager_wake(RdpBridge* bridge) { (void)SetEvent(bridge->input_event); }
 void rdp_manager_cancel(RdpBridge* bridge) {
+    rdp_manager_wake(bridge);
     atomic_store(&bridge->cancelled, 1);
     /* Active sessions leave the bounded poll loop and release input before disconnect. */
     if (!atomic_load(&bridge->connected))
@@ -442,6 +466,7 @@ void rdp_manager_free(RdpBridge* bridge) {
         }
         freerdp_free(bridge->instance);
     }
+    if (bridge->input_event) CloseHandle(bridge->input_event);
     DeleteCriticalSection(&bridge->graphics_lock);
     free(bridge);
 }
@@ -451,16 +476,19 @@ const char* rdp_manager_build_config(void) { return freerdp_get_build_config(); 
 
 void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity) {
     EnterCriticalSection(&bridge->graphics_lock);
+    RdpgfxClientContext* gfx = bridge->gfx;
+    if (gfx) EnterCriticalSection(&gfx->mux);
     rdpSettings* settings = bridge->instance->context->settings;
     const char* classic[] = {"bitmap", "RemoteFX", "NSCodec", "raw-surface", "other-surface"};
     snprintf(output, capacity,
-        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu rfx=%d nsc=%d",
+        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu input_wakes=%llu scans=%llu unicode=%llu hw_requested=%d rfx=%d nsc=%d",
         bridge->gfx ? "EGFX" : "classic", bridge->channel_loads, bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
         (unsigned long long)atomic_load(&bridge->paints), (unsigned long long)bridge->complete_frames,
-        (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us,
+        (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us, (unsigned long long)atomic_load(&bridge->input_wakes), (unsigned long long)atomic_load(&bridge->input_scans), (unsigned long long)atomic_load(&bridge->input_unicode), !freerdp_settings_get_bool(settings, FreeRDP_SoftwareGdi),
         freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec),
         freerdp_settings_get_bool(settings, FreeRDP_NSCodec));
+    if (gfx) LeaveCriticalSection(&gfx->mux);
     LeaveCriticalSection(&bridge->graphics_lock);
 }

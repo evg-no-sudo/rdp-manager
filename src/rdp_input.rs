@@ -86,6 +86,15 @@ fn russian_scan(key: gdk::Key) -> Option<u16> {
     }
     None
 }
+// A missing backend map must not change the transport to Unicode.
+fn physical_scan(key: gdk::Key, symbols: &[gdk::Key]) -> Option<u16> {
+    special(key)
+        .or_else(|| symbols.iter().find_map(|symbol| special(*symbol)))
+        .or_else(|| symbols.iter().find_map(|symbol| shortcut(*symbol)))
+        .or_else(|| symbols.iter().find_map(|symbol| russian_scan(*symbol)))
+        .or_else(|| shortcut(key))
+        .or_else(|| russian_scan(key))
+}
 fn unicode(control: &Control, text: &str) {
     for code in text.encode_utf16() {
         control.send(Input {
@@ -151,12 +160,21 @@ pub fn attach(
     im.set_client_widget(Some(picture));
     im.set_use_preedit(false);
     let sender = control.clone();
-    im.connect_commit(move |_, text| unicode(&sender, text));
+    let commit_mode = text_mode.clone();
+    im.connect_commit(move |_, text| {
+        if commit_mode
+            .upgrade()
+            .is_some_and(|button| button.is_active())
+        {
+            unicode(&sender, text);
+        }
+    });
     let keys = gtk::EventControllerKey::new();
     keys.set_propagation_phase(gtk::PropagationPhase::Capture);
     let sender = control.clone();
     let held = pressed.clone();
     let input = im.clone();
+    let release_mode = text_mode.clone();
     keys.connect_key_pressed(move |controller, key, identity, state| {
         if key == gdk::Key::Control_R {
             if let Some(button) = capture_key.upgrade().filter(|b| b.is_active()) {
@@ -176,33 +194,32 @@ pub fn attach(
             });
             return glib::Propagation::Stop;
         }
-        let code = special(key).or_else(|| {
-            if !text_mode.upgrade().is_some_and(|b| b.is_active())
-                || state.intersects(
-                    gdk::ModifierType::CONTROL_MASK
-                        | gdk::ModifierType::ALT_MASK
-                        | gdk::ModifierType::SUPER_MASK
-                        | gdk::ModifierType::META_MASK,
-                )
-            {
-                (|| {
-                    // GDK translates its own backend-specific identity. Do not subtract
-                    // an X11 offset or send a Linux evdev code to Windows.
-                    let widget = controller.widget()?;
-                    let symbols = widget.display().map_keycode(identity)?;
-                    symbols
-                        .iter()
-                        .find_map(|(_, symbol)| shortcut(*symbol))
-                        .or_else(|| symbols.iter().find_map(|(_, symbol)| russian_scan(*symbol)))
-                        .or_else(|| shortcut(key))
-                })()
-            } else {
-                None
-            }
-        });
+        let raw = !text_mode.upgrade().is_some_and(|b| b.is_active());
+        let modified = state.intersects(
+            gdk::ModifierType::CONTROL_MASK
+                | gdk::ModifierType::ALT_MASK
+                | gdk::ModifierType::SUPER_MASK
+                | gdk::ModifierType::META_MASK,
+        );
+        let symbols = controller
+            .widget()
+            .and_then(|widget| widget.display().map_keycode(identity))
+            .unwrap_or_default()
+            .into_iter()
+            .map(|(_, symbol)| symbol)
+            .collect::<Vec<_>>();
+        let code = if raw || modified {
+            physical_scan(key, &symbols)
+        } else {
+            special(key)
+        };
         if let Some(code) = code {
             let repeat = held.borrow_mut().insert(identity, code).is_some();
             sender.send(Input::scan(code, true, repeat));
+            return glib::Propagation::Stop;
+        }
+        if raw || modified {
+            // Unknown physical keys stay local; never silently convert them to text.
             return glib::Propagation::Stop;
         }
         if let Some(event) = controller.current_event() {
@@ -222,8 +239,13 @@ pub fn attach(
     keys.connect_key_released(move |controller, _, identity, _| {
         if let Some(code) = held.borrow_mut().remove(&identity) {
             sender.send(Input::scan(code, false, false));
-        } else if let Some(event) = controller.current_event() {
-            input.filter_keypress(&event);
+        } else if release_mode
+            .upgrade()
+            .is_some_and(|button| button.is_active())
+        {
+            if let Some(event) = controller.current_event() {
+                input.filter_keypress(&event);
+            }
         }
     });
     picture.add_controller(keys);
@@ -390,5 +412,26 @@ mod tests {
         assert_eq!(russian_scan(gdk::Key::Cyrillic_ef), Some(30));
         assert_eq!(russian_scan(gdk::Key::Cyrillic_YA), Some(44));
         assert_eq!(russian_scan(gdk::Key::Cyrillic_io), Some(41));
+        // Both empty GDK map and local group-switch keyvals must preserve scan input.
+        assert_eq!(physical_scan(gdk::Key::Cyrillic_ef, &[]), Some(30));
+        assert_eq!(physical_scan(gdk::Key::a, &[]), Some(30));
+        assert_eq!(
+            physical_scan(
+                gdk::Key::ISO_Next_Group,
+                &[gdk::Key::Alt_L, gdk::Key::ISO_Next_Group]
+            ),
+            Some(56)
+        );
+        assert_eq!(
+            physical_scan(
+                gdk::Key::ISO_Next_Group,
+                &[gdk::Key::Shift_L, gdk::Key::ISO_Next_Group]
+            ),
+            Some(42)
+        );
+        assert_eq!(
+            physical_scan(gdk::Key::Cyrillic_ef, &[gdk::Key::a, gdk::Key::Cyrillic_ef]),
+            Some(30)
+        );
     }
 }
