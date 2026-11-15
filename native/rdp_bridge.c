@@ -377,9 +377,9 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_AutoAcceptCertificate, FALSE);
     SET_BOOL(FreeRDP_AutoDenyCertificate, FALSE);
     SET_BOOL(FreeRDP_CertificateCallbackPreferPEM, TRUE);
-    SET_BOOL(FreeRDP_SupportGraphicsPipeline, TRUE);
+    SET_BOOL(FreeRDP_SupportGraphicsPipeline, quality != 3);
     const char* build = freerdp_get_build_config();
-    const BOOL h264 = quality != 1 && build && strstr(build, "WITH_GFX_H264=ON");
+    const BOOL h264 = quality != 1 && quality != 3 && build && strstr(build, "WITH_GFX_H264=ON");
     const char* decoder_mode = getenv("RDP_MANAGER_H264_DECODER");
     const BOOL hw_request = quality != 2 && h264 && strstr(build, "WITH_FFMPEG_HWACCEL=ON") &&
         (!decoder_mode || strcmp(decoder_mode, "software") != 0);
@@ -395,8 +395,13 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_AudioPlayback, FALSE);
     SET_BOOL(FreeRDP_RedirectDrives, FALSE);
     SET_BOOL(FreeRDP_RedirectSmartCards, FALSE);
-    SET_BOOL(FreeRDP_RemoteFxCodec, TRUE);
-    SET_BOOL(FreeRDP_NSCodec, TRUE);
+    SET_BOOL(FreeRDP_RemoteFxCodec, quality != 3);
+    SET_BOOL(FreeRDP_NSCodec, quality != 3);
+    if (quality == 3) {
+        SET_BOOL(FreeRDP_RemoteFxImageCodec, FALSE);
+        SET_BOOL(FreeRDP_JpegCodec, FALSE);
+        SET_UINT(FreeRDP_BitmapCacheV3CodecId, 0);
+    }
     SET_BOOL(FreeRDP_RedirectClipboard, FALSE);
     SET_BOOL(FreeRDP_DynamicResolutionUpdate, TRUE);
     SET_BOOL(FreeRDP_DesktopResize, TRUE);

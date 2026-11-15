@@ -73,7 +73,7 @@ impl Default for SessionOptions {
 impl SessionOptions {
     fn validate(&self) -> Result<()> {
         if ![0x409, 0x419].contains(&self.keyboard_layout)
-            || self.quality > 2
+            || self.quality > 3
             || self.resolution > 3
         {
             return Err("Некорректные параметры сеанса.".into());
@@ -430,7 +430,7 @@ mod tests {
         copy.id = Some(copy_id);
         let changed = SessionOptions {
             keyboard_layout: 0x409,
-            quality: 2,
+            quality: 3,
             resolution: 3,
         };
         store.save_with_options(&copy, &changed)?;
