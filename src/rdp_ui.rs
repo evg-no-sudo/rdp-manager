@@ -59,6 +59,25 @@ pub fn connect(
     form.append(&remember);
     let resolution = gtk::DropDown::from_strings(&["1280 × 720", "1600 × 900", "1920 × 1080"]);
     form.append(&resolution);
+    let keyboard_layout = gtk::DropDown::from_strings(&["Английская (US)", "Русская (ЙЦУКЕН)"]);
+    if glib::language_names()
+        .iter()
+        .any(|language| language.starts_with("ru"))
+    {
+        keyboard_layout.set_selected(1);
+    }
+    let layout_row = adw::ActionRow::builder()
+        .title("Начальная раскладка RDP")
+        .build();
+    layout_row.add_suffix(&keyboard_layout);
+    form.append(&layout_row);
+    let quality = gtk::DropDown::from_strings(&[
+        "Авто: скорость и качество",
+        "Приоритет чёткости (без H.264)",
+    ]);
+    let quality_row = adw::ActionRow::builder().title("Графика").build();
+    quality_row.add_suffix(&quality);
+    form.append(&quality_row);
     let status = gtk::Label::builder()
         .label("Читаю локальное хранилище паролей…")
         .wrap(true)
@@ -134,6 +153,12 @@ pub fn connect(
             2 => (1920, 1080),
             _ => (1280, 720),
         };
+        let keyboard_layout = if keyboard_layout.selected() == 1 {
+            0x419
+        } else {
+            0x409
+        };
+        let quality = quality.selected();
         let remember = remember.is_active();
         let state = state.clone();
         let profile = profile.clone();
@@ -187,6 +212,8 @@ pub fn connect(
                 password: secret,
                 width,
                 height,
+                keyboard_layout,
+                quality,
             };
             open(&tabs, state, history_profile, config);
             password.set_text("");
@@ -337,6 +364,23 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         });
         options_box.append(&button);
     }
+    let test_text = gtk::Button::with_label("Отправить «Привет»");
+    test_text.set_tooltip_text(Some(
+        "Проверка Unicode: заранее откройте текстовый редактор на удалённом ПК",
+    ));
+    let sender = control.clone();
+    let weak_picture = picture.downgrade();
+    let weak_popover = popover.downgrade();
+    test_text.connect_clicked(move |_| {
+        if let Some(popover) = weak_popover.upgrade() {
+            popover.popdown();
+        }
+        if let Some(picture) = weak_picture.upgrade() {
+            picture.grab_focus();
+        }
+        sender.send_text("Привет");
+    });
+    options_box.append(&test_text);
     let sender = control.clone();
     disconnect.connect_clicked(move |button| {
         sender.stop();

@@ -37,6 +37,8 @@ extern "C" {
         domain: *const c_char,
         width: u32,
         height: u32,
+        keyboard_layout: u32,
+        quality: u32,
         opaque: *mut c_void,
         frame: FrameCallback,
         certificate: CertCallback,
@@ -82,6 +84,8 @@ pub struct Config {
     pub password: Zeroizing<String>,
     pub width: u32,
     pub height: u32,
+    pub keyboard_layout: u32,
+    pub quality: u32,
 }
 #[derive(Debug)]
 pub struct Certificate {
@@ -188,6 +192,22 @@ impl Control {
                 self.overflow.store(true, Ordering::Release);
                 self.stop();
             }
+        }
+    }
+    pub fn send_text(&self, text: &str) {
+        for code in text.encode_utf16() {
+            self.send(Input {
+                kind: 1,
+                flags: 0,
+                a: code,
+                b: 0,
+            });
+            self.send(Input {
+                kind: 1,
+                flags: 0x8000,
+                a: code,
+                b: 0,
+            });
         }
     }
     pub fn chord(&self, codes: &[u16]) {
@@ -427,6 +447,8 @@ fn run(
             domain.as_ptr(),
             config.width,
             config.height,
+            config.keyboard_layout,
+            config.quality,
             callbacks as *mut _ as *mut c_void,
             frame_callback,
             certificate_callback,
@@ -618,6 +640,8 @@ mod tests {
             password: Zeroizing::new("fixture-password".into()),
             width: 640,
             height: 480,
+            keyboard_layout: 0x419,
+            quality: 0,
         };
         let (control, events) = start(config()).unwrap();
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
@@ -664,6 +688,7 @@ mod tests {
                 }
                 Ok(Event::Connected) => {
                     connected = true;
+                    control.send_text("Привет");
                     control.send(Input::scan(0x1e, true, false));
                     control.send(Input::scan(0x1e, false, false));
                     control.send(Input {
@@ -700,6 +725,15 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(connected && painted);
+        let log = std::fs::read_to_string(root.join("input.log")).unwrap();
+        assert!(
+            log.contains("U:0:1055") && log.contains("U:32768:1090"),
+            "Cyrillic UTF-16 did not reach the server"
+        );
+        assert!(
+            log.contains("LAYOUT:1049"),
+            "Russian RDP keyboard layout was not advertised"
+        );
         let log = std::fs::read_to_string(root.join("input.log")).unwrap();
         assert!(log.contains("K:0:30"));
         assert!(log.contains("U:0:65"));

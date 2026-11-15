@@ -10,7 +10,7 @@ int rdp_manager_initialize(void);
 const char* rdp_manager_build_config(void);
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
                           const char* password, const char* domain, uint32_t width, uint32_t height,
-                          void* opaque, RdpFrame frame, RdpCertificate certificate);
+                          uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate);
 int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);
 void rdp_manager_graphics_stats(RdpBridge*, char*, size_t);

@@ -28,7 +28,7 @@ int main(int argc,char** argv){
     assert(argc==2);
     assert(rdp_manager_initialize());
     Probe probe={.expected=0x11};
-    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,&probe,capture,cert);
+    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,1,&probe,capture,cert);
     assert(bridge&&rdp_manager_connect(bridge));
     rdp_manager_prepare_input(bridge);
     assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
@@ -37,6 +37,8 @@ int main(int argc,char** argv){
     rdp_manager_prepare_input(bridge);
     assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
     rdpContext* ctx=bridge->instance->context;
+    assert(!freerdp_settings_get_bool(ctx->settings,FreeRDP_GfxH264));
+    assert(!freerdp_settings_get_bool(ctx->settings,FreeRDP_GfxAVC444));
     void* surface_data=NULL;
     RdpgfxClientContext context={.handle=&surface_data,.SetSurfaceData=set_surface,.GetSurfaceData=get_surface,.GetSurfaceIds=get_ids};
     RdpgfxClientContext* gfx=&context;

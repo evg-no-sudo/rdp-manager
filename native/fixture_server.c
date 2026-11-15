@@ -20,7 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 typedef struct {FILE* log;BOOL activated;BOOL painted;UINT64 end_at;BOOL gfx_ready;RdpgfxServerContext* gfx;} Fixture;
-static BOOL active(freerdp_peer* peer){((Fixture*)peer->ContextExtra)->activated=TRUE;return TRUE;}
+static BOOL active(freerdp_peer* peer){
+    Fixture* f=peer->ContextExtra;f->activated=TRUE;
+    fprintf(f->log,"LAYOUT:%u\n",freerdp_settings_get_uint32(peer->context->settings,FreeRDP_KeyboardLayout));fflush(f->log);
+    return TRUE;
+}
 static BOOL mouse(rdpInput* input,UINT16 flags,UINT16 x,UINT16 y){FILE* log=((Fixture*)input->context->peer->ContextExtra)->log;fprintf(log,"M:%u:%u:%u\n",flags,x,y);fflush(log);return TRUE;}
 static BOOL keyboard(rdpInput* input,UINT16 flags,UINT8 code){FILE* log=((Fixture*)input->context->peer->ContextExtra)->log;fprintf(log,"K:%u:%u\n",flags,code);fflush(log);return TRUE;}
 static BOOL unicode_key(rdpInput* input,UINT16 flags,UINT16 code){FILE* log=((Fixture*)input->context->peer->ContextExtra)->log;fprintf(log,"U:%u:%u\n",flags,code);fflush(log);return TRUE;}

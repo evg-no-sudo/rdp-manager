@@ -279,7 +279,7 @@ static DWORD verify_changed_certificate(freerdp* instance, const char* host, UIN
 
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     const char* password, const char* domain, uint32_t width, uint32_t height,
-    void* opaque, RdpFrame frame, RdpCertificate certificate) {
+    uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate) {
     if (!host || !user || !password || !domain || !frame || !certificate || !port ||
         !width || !height || width > 8192 || height > 8192 || (uint64_t)width * height > 16777216) return NULL;
     RdpBridge* bridge = calloc(1, sizeof(*bridge));
@@ -320,6 +320,10 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_UINT(FreeRDP_DesktopWidth, width);
     SET_UINT(FreeRDP_DesktopHeight, height);
     SET_UINT(FreeRDP_ColorDepth, 32);
+    SET_UINT(FreeRDP_KeyboardLayout, keyboard_layout);
+    SET_UINT(FreeRDP_KeyboardType, 4);
+    SET_UINT(FreeRDP_KeyboardSubType, 0);
+    SET_UINT(FreeRDP_KeyboardFunctionKey, 12);
     SET_UINT(FreeRDP_TcpConnectTimeout, 10000);
     SET_BOOL(FreeRDP_TlsSecurity, TRUE);
     SET_BOOL(FreeRDP_NlaSecurity, TRUE);
@@ -330,7 +334,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_CertificateCallbackPreferPEM, TRUE);
     SET_BOOL(FreeRDP_SupportGraphicsPipeline, TRUE);
     const char* build = freerdp_get_build_config();
-    const BOOL h264 = build && strstr(build, "WITH_GFX_H264=ON");
+    const BOOL h264 = quality != 1 && build && strstr(build, "WITH_GFX_H264=ON");
     const char* decoder_mode = getenv("RDP_MANAGER_H264_DECODER");
     const BOOL hw_request = h264 && strstr(build, "WITH_FFMPEG_HWACCEL=ON") &&
         (!decoder_mode || strcmp(decoder_mode, "software") != 0);
@@ -481,10 +485,11 @@ void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity
     rdpSettings* settings = bridge->instance->context->settings;
     const char* classic[] = {"bitmap", "RemoteFX", "NSCodec", "raw-surface", "other-surface"};
     snprintf(output, capacity,
-        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u paints=%llu frames=%llu copies=%llu copy_us=%llu input_wakes=%llu scans=%llu unicode=%llu hw_requested=%d rfx=%d nsc=%d",
+        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u keyboard_layout=%u paints=%llu frames=%llu copies=%llu copy_us=%llu input_wakes=%llu scans=%llu unicode=%llu hw_requested=%d rfx=%d nsc=%d",
         bridge->gfx ? "EGFX" : "classic", bridge->channel_loads, bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
+        freerdp_settings_get_uint32(settings, FreeRDP_KeyboardLayout),
         (unsigned long long)atomic_load(&bridge->paints), (unsigned long long)bridge->complete_frames,
         (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us, (unsigned long long)atomic_load(&bridge->input_wakes), (unsigned long long)atomic_load(&bridge->input_scans), (unsigned long long)atomic_load(&bridge->input_unicode), !freerdp_settings_get_bool(settings, FreeRDP_SoftwareGdi),
         freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec),

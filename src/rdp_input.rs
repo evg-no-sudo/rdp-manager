@@ -95,22 +95,20 @@ fn physical_scan(key: gdk::Key, symbols: &[gdk::Key]) -> Option<u16> {
         .or_else(|| shortcut(key))
         .or_else(|| russian_scan(key))
 }
-fn unicode(control: &Control, text: &str) {
-    for code in text.encode_utf16() {
-        control.send(Input {
-            kind: 1,
-            flags: 0,
-            a: code,
-            b: 0,
-        });
-        control.send(Input {
-            kind: 1,
-            flags: 0x8000,
-            a: code,
-            b: 0,
-        });
-    }
+fn stale_modifier(code: u16, state: gdk::ModifierType) -> bool {
+    let mask = match code {
+        29 | 0x11d => gdk::ModifierType::CONTROL_MASK,
+        42 | 54 => gdk::ModifierType::SHIFT_MASK,
+        56 => gdk::ModifierType::ALT_MASK,
+        0x15b | 0x15c => gdk::ModifierType::SUPER_MASK | gdk::ModifierType::META_MASK,
+        _ => return false,
+    };
+    !state.intersects(mask)
 }
+fn unicode(control: &Control, text: &str) {
+    control.send_text(text);
+}
+
 fn point(picture: &gtk::Picture, x: f64, y: f64, size: (u32, u32)) -> Option<(u16, u16)> {
     rdp::remote_point(
         x,
@@ -176,6 +174,19 @@ pub fn attach(
     let input = im.clone();
     let release_mode = text_mode.clone();
     keys.connect_key_pressed(move |controller, key, identity, state| {
+        // Local layout shortcuts can consume key-up. Reconcile modifiers before
+        // ordinary keys so an old remote Alt/Shift cannot poison subsequent text.
+        if special(key).is_none() {
+            held.borrow_mut().retain(|_, code| {
+                if stale_modifier(*code, state) {
+                    sender.send(Input::scan(*code, false, false));
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
         if key == gdk::Key::Control_R {
             if let Some(button) = capture_key.upgrade().filter(|b| b.is_active()) {
                 button.set_active(false);
@@ -220,6 +231,15 @@ pub fn attach(
         }
         if raw || modified {
             // Unknown physical keys stay local; never silently convert them to text.
+            return glib::Propagation::Stop;
+        }
+        // Standard Cyrillic keyvals are already committed characters. Some IM
+        // modules consume them without a commit on this custom drawing widget.
+        if let Some(character) = key
+            .to_unicode()
+            .filter(|c| ('\u{0400}'..='\u{052f}').contains(c))
+        {
+            unicode(&sender, &character.to_string());
             return glib::Propagation::Stop;
         }
         if let Some(event) = controller.current_event() {
@@ -405,6 +425,9 @@ mod tests {
     use super::*;
     #[test]
     fn logical_key_mapping_does_not_depend_on_x11_hardware_codes() {
+        assert!(stale_modifier(56, gdk::ModifierType::empty()));
+        assert!(!stale_modifier(56, gdk::ModifierType::ALT_MASK));
+        assert!(!stale_modifier(30, gdk::ModifierType::empty()));
         assert_eq!(special(gdk::Key::Control_R), Some(0x11d));
         assert_eq!(special(gdk::Key::Delete), Some(0x153));
         assert_eq!(shortcut(gdk::Key::C), Some(46));
