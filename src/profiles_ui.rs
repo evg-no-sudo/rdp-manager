@@ -1,5 +1,8 @@
 use crate::secrets;
-use crate::{store::Profile, ui::State};
+use crate::{
+    store::{Profile, SessionOptions},
+    ui::State,
+};
 use adw::prelude::*;
 use std::{cell::Cell, rc::Rc};
 use zeroize::Zeroizing;
@@ -45,6 +48,41 @@ pub fn refresh(state: &Rc<State>) {
                         .valign(gtk::Align::Center)
                         .build();
                     row.add_suffix(&connect);
+                    let more = gtk::MenuButton::builder()
+                        .icon_name("view-more-symbolic")
+                        .valign(gtk::Align::Center)
+                        .tooltip_text("Действия с подключением")
+                        .build();
+                    let popover = gtk::Popover::new();
+                    let clone_button = gtk::Button::with_label("Клонировать…");
+                    popover.set_child(Some(&clone_button));
+                    more.set_popover(Some(&popover));
+                    row.add_suffix(&more);
+                    let weak_popover = popover.downgrade();
+                    let clone_state = state.clone();
+                    let source = profile.clone();
+                    clone_button.connect_clicked(move |button| {
+                        if let Some(window) = button.root().and_downcast::<adw::ApplicationWindow>()
+                        {
+                            if let Some(popover) = weak_popover.upgrade() {
+                                popover.popdown();
+                            }
+                            let uid = source.uid.clone();
+                            let mut draft = source.clone();
+                            draft.id = None;
+                            draft.uid = gtk::glib::uuid_string_random().into();
+                            let profiles = clone_state.store.profiles().unwrap_or_default();
+                            draft.name = format!("{} (копия)", source.name);
+                            for index in 2..=profiles.len() + 2 {
+                                if !profiles.iter().any(|p| p.name == draft.name) {
+                                    break;
+                                }
+                                draft.name = format!("{} (копия {index})", source.name);
+                            }
+                            edit_draft(&window, clone_state.clone(), draft, Some(uid));
+                        }
+                    });
+
                     let connection_state = state.clone();
                     let connection_profile = profile.clone();
                     connect.connect_clicked(move |button| {
@@ -75,6 +113,30 @@ pub fn refresh(state: &Rc<State>) {
 }
 
 pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile) {
+    edit_draft(parent, state, profile, None);
+}
+fn edit_draft(
+    parent: &adw::ApplicationWindow,
+    state: Rc<State>,
+    profile: Profile,
+    clone_source: Option<String>,
+) {
+    let options = match state
+        .store
+        .session_options(clone_source.as_deref().unwrap_or(&profile.uid))
+    {
+        Ok(options) => options,
+        Err(error) => {
+            let alert = adw::AlertDialog::builder()
+                .heading("Не удалось открыть настройки")
+                .body(error.to_string())
+                .build();
+            alert.add_response("close", "Закрыть");
+            alert.present(Some(parent));
+            return;
+        }
+    };
+
     let dialog = adw::Dialog::builder()
         .title(if profile.id.is_some() {
             "Профиль подключения"
@@ -103,6 +165,46 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     let username = entry("Пользователь", &profile.username);
     let domain = entry("Домен (необязательно)", &profile.domain);
     form.append(&group);
+    let advanced = adw::ExpanderRow::builder()
+        .title("Дополнительные настройки")
+        .build();
+    let combo = |title: &str, items: &[&str], selected: u32| {
+        let row = adw::ComboRow::builder()
+            .title(title)
+            .model(&gtk::StringList::new(items))
+            .selected(selected)
+            .build();
+        advanced.add_row(&row);
+        row
+    };
+    let keyboard_layout = combo(
+        "Раскладка RDP",
+        &["Русская (ЙЦУКЕН)", "Английская (US)"],
+        u32::from(options.keyboard_layout != 0x419),
+    );
+    let quality = combo(
+        "Графика",
+        &[
+            "Авто: скорость и качество",
+            "Приоритет чёткости",
+            "H.264 без GPU (совместимость)",
+        ],
+        options.quality,
+    );
+    let resolution = combo(
+        "Разрешение",
+        &[
+            "Автоматически — по размеру окна",
+            "1280 × 720",
+            "1600 × 900",
+            "1920 × 1080",
+        ],
+        options.resolution,
+    );
+    let advanced_group = adw::PreferencesGroup::new();
+    advanced_group.add(&advanced);
+    form.append(&advanced_group);
+
     let password = adw::PasswordEntryRow::builder()
         .title("Новый пароль (только на этом ПК)")
         .build();
@@ -167,6 +269,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     let save_error = error.clone();
     let save_form = layout.downgrade();
     let save_id = current_id.clone();
+    let clone_password = password.downgrade();
     save.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else { return; };
         let Some(operation) = save_state.operation(&uid) else {
@@ -182,7 +285,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         let result = (|| {
             let port = port.text().trim().parse::<u16>()
                 .map_err(|_| "Порт должен быть от 1 до 65535.")?;
-            save_state.store.save(&Profile {
+            save_state.store.save_with_options(&Profile {
                 id: save_id.get(),
                 uid: uid.clone(),
                 name: name.text().trim().into(),
@@ -190,7 +293,8 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
                 port,
                 username: username.text().trim().into(),
                 domain: domain.text().trim().into(),
-            })
+            }, &SessionOptions { keyboard_layout:if keyboard_layout.selected()==0 {0x419}else{0x409},
+                quality:quality.selected(), resolution:resolution.selected() })
         })();
         let id = match result {
             Ok(id) => id,
@@ -238,6 +342,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
         footer.append(&delete);
         let weak_dialog = dialog.downgrade();
         let weak_form = layout.downgrade();
+        let delete_error = error.clone();
         delete.connect_clicked(move |button| {
             let confirm = adw::AlertDialog::builder()
                 .heading("Удалить профиль и локальный пароль?")
@@ -250,7 +355,7 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
             let state = state.clone();
             let weak_dialog = weak_dialog.clone();
             let weak_form = weak_form.clone();
-            let error = error.clone();
+            let error = delete_error.clone();
             let uid = profile.uid.clone();
             confirm.connect_response(None, move |_, response| {
                 if response != "delete" { return; }
@@ -293,6 +398,31 @@ pub fn edit(parent: &adw::ApplicationWindow, state: Rc<State>, profile: Profile)
     layout.append(&scroll);
     layout.append(&footer);
     dialog.set_child(Some(&layout));
+    if let Some(source_uid) = clone_source {
+        layout.set_sensitive(false);
+        let weak_layout = layout.downgrade();
+        let weak_dialog = dialog.downgrade();
+        let weak_password = clone_password;
+        let error = error.clone();
+        gtk::glib::MainContext::default().spawn_local(async move {
+            let result = secrets::lookup_rdp(&source_uid).await;
+            if let (Some(layout), Some(_dialog), Some(password)) = (
+                weak_layout.upgrade(),
+                weak_dialog.upgrade(),
+                weak_password.upgrade(),
+            ) {
+                match result {
+                    Ok(Some(secret)) => password.set_text(&secret),
+                    Ok(None) => {}
+                    Err(message) => {
+                        show_error(&error, &format!("Пароль не скопирован. {message}"));
+                        error.set_visible(true);
+                    }
+                }
+                layout.set_sensitive(true);
+            }
+        });
+    }
     dialog.present(Some(parent));
 }
 

@@ -30,6 +30,11 @@ int main(int argc,char** argv){
     Probe probe={.expected=0x11};
     RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,1,&probe,capture,cert);
     assert(bridge&&rdp_manager_connect(bridge));
+    RdpBridge* compatibility=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,2,&probe,capture,cert);
+    assert(compatibility);
+    assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_SoftwareGdi));
+    if(strstr(freerdp_get_build_config(),"WITH_GFX_H264=ON"))assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_GfxH264));
+    rdp_manager_free(compatibility);
     rdp_manager_prepare_input(bridge);
     assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
     rdp_manager_wake(bridge);

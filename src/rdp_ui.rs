@@ -20,216 +20,110 @@ fn message(label: &gtk::Label, text: &str, success: bool) {
     label.set_text(text);
     label.set_visible(true);
 }
+fn connect_saved(
+    parent: &adw::ApplicationWindow,
+    tabs: &adw::TabView,
+    state: Rc<State>,
+    uid: &str,
+    secret: Zeroizing<String>,
+) {
+    let result = (|| {
+        let profile = state
+            .store
+            .profiles()?
+            .into_iter()
+            .find(|p| p.uid == uid)
+            .ok_or("Подключение удалено")?;
+        let options = state.store.session_options(uid)?;
+        let (width, height) = match options.resolution {
+            1 => (1280, 720),
+            2 => (1600, 900),
+            3 => (1920, 1080),
+            _ => rdp::desktop_size(tabs.width(), tabs.height() - 60, tabs.scale_factor())
+                .map(|(w, h)| (u32::from(w), u32::from(h)))
+                .unwrap_or((1280, 720)),
+        };
+        let config = Config {
+            host: profile.host.clone(),
+            port: profile.port,
+            username: profile.username.clone(),
+            domain: profile.domain.clone(),
+            password: secret,
+            width,
+            height,
+            keyboard_layout: options.keyboard_layout,
+            quality: options.quality,
+            auto_resize: options.resolution == 0,
+        };
+        Ok::<_, Box<dyn std::error::Error>>((profile, config))
+    })();
+    match result {
+        Ok((profile, config)) => open(tabs, state, profile, config),
+        Err(error) => {
+            let alert = adw::AlertDialog::builder()
+                .heading("Не удалось подключиться")
+                .body(error.to_string())
+                .build();
+            alert.add_response("close", "Закрыть");
+            alert.present(Some(parent));
+        }
+    }
+}
+
 pub fn connect(
     parent: &adw::ApplicationWindow,
     tabs: &adw::TabView,
     state: Rc<State>,
     profile: Profile,
 ) {
-    let dialog = adw::Dialog::builder()
-        .title(format!("Подключиться: {}", profile.name))
-        .content_width(560)
-        .content_height(540)
-        .build();
-    let root = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    root.append(&adw::HeaderBar::new());
-    let form = gtk::Box::new(gtk::Orientation::Vertical, 12);
-    form.set_margin_start(16);
-    form.set_margin_end(16);
-    form.set_margin_bottom(16);
-    let group=adw::PreferencesGroup::builder().description(format!("Сервер: {} · порт {}. Изменение пользователя/домена здесь действует только для этого сеанса.",profile.host,profile.port)).build();
-    let user = adw::EntryRow::builder()
-        .title("Пользователь")
-        .text(&profile.username)
-        .build();
-    let domain = adw::EntryRow::builder()
-        .title("Домен")
-        .text(&profile.domain)
-        .build();
-    let password = adw::PasswordEntryRow::builder()
-        .title("Пароль для этого подключения")
-        .sensitive(false)
-        .build();
-    group.add(&user);
-    group.add(&domain);
-    group.add(&password);
-    form.append(&group);
-    let remember =
-        gtk::CheckButton::with_label("Сохранить пароль на этом ПК для исходного профиля");
-    form.append(&remember);
-    let resolution = gtk::DropDown::from_strings(&["1280 × 720", "1600 × 900", "1920 × 1080"]);
-    form.append(&resolution);
-    let keyboard_layout = gtk::DropDown::from_strings(&["Английская (US)", "Русская (ЙЦУКЕН)"]);
-    if glib::language_names()
-        .iter()
-        .any(|language| language.starts_with("ru"))
-    {
-        keyboard_layout.set_selected(1);
-    }
-    let layout_row = adw::ActionRow::builder()
-        .title("Начальная раскладка RDP")
-        .build();
-    layout_row.add_suffix(&keyboard_layout);
-    form.append(&layout_row);
-    let quality = gtk::DropDown::from_strings(&[
-        "Авто: скорость и качество",
-        "Приоритет чёткости (без H.264)",
-    ]);
-    let quality_row = adw::ActionRow::builder().title("Графика").build();
-    quality_row.add_suffix(&quality);
-    form.append(&quality_row);
-    let status = gtk::Label::builder()
-        .label("Читаю локальное хранилище паролей…")
-        .wrap(true)
-        .xalign(0.0)
-        .build();
-    form.append(&status);
-    let start = gtk::Button::with_label("Подключиться");
-    start.add_css_class("suggested-action");
-    start.set_sensitive(false);
-    form.append(&start);
-    user.set_sensitive(false);
-    domain.set_sensitive(false);
-    for entry in [&user, &domain] {
-        let weak_user = user.downgrade();
-        let weak_domain = domain.downgrade();
-        let weak_password = password.downgrade();
-        let weak_remember = remember.downgrade();
-        let expected_user = profile.username.clone();
-        let expected_domain = profile.domain.clone();
-        entry.connect_changed(move |_| {
-            if let (Some(user), Some(domain), Some(password), Some(remember)) = (
-                weak_user.upgrade(),
-                weak_domain.upgrade(),
-                weak_password.upgrade(),
-                weak_remember.upgrade(),
-            ) {
-                password.set_text("");
-                let unchanged = user.text().as_str() == expected_user
-                    && domain.text().as_str() == expected_domain;
-                remember.set_sensitive(unchanged);
-                if !unchanged {
-                    remember.set_active(false);
-                }
-            }
-        });
-    }
-    let closed = Rc::new(Cell::new(false));
-    let flag = closed.clone();
-    dialog.connect_closed(move |_| flag.set(true));
-    let uid = profile.uid.clone();
-    let weak_password = password.downgrade();
-    let weak_start = start.downgrade();
-    let weak_status = status.downgrade();
-    let weak_user = user.downgrade();
-    let weak_domain = domain.downgrade();
-    glib::MainContext::default().spawn_local(async move{
-        let result=secrets::lookup_rdp(&uid).await;if closed.get(){return;}
-        if let(Some(password),Some(start),Some(status),Some(user),Some(domain))=(weak_password.upgrade(),weak_start.upgrade(),weak_status.upgrade(),weak_user.upgrade(),weak_domain.upgrade()){
-            match result{
-                Ok(Some(value))=>{password.set_text(&value);message(&status,"Используется пароль из локального хранилища.",true);}
-                Ok(None)=>{status.remove_css_class("error");status.set_text("Введите пароль для этого сеанса. Он не попадёт в историю или наборы обмена.");}
-                Err(error)=>message(&status,&format!("{error} Можно ввести пароль только для этого сеанса и не сохранять его."),false),
-            }
-            password.set_sensitive(true);user.set_sensitive(true);domain.set_sensitive(true);start.set_sensitive(true);
-        }
-    });
-    let weak_dialog = dialog.downgrade();
+    let Some(operation) = state.operation(&profile.uid) else {
+        return;
+    };
+    let weak_parent = parent.downgrade();
     let weak_tabs = tabs.downgrade();
-    let weak_root = root.downgrade();
-    start.connect_clicked(move |_| {
-        let (Some(dialog), Some(tabs), Some(root)) = (
-            weak_dialog.upgrade(),
-            weak_tabs.upgrade(),
-            weak_root.upgrade(),
-        ) else {
-            return;
-        };
-        let username = user.text().trim().to_string();
-        let domain = domain.text().trim().to_string();
-        let secret = Zeroizing::new(password.text().to_string());
-        let (width, height) = match resolution.selected() {
-            1 => (1600, 900),
-            2 => (1920, 1080),
-            _ => (1280, 720),
-        };
-        let keyboard_layout = if keyboard_layout.selected() == 1 {
-            0x419
-        } else {
-            0x409
-        };
-        let quality = quality.selected();
-        let remember = remember.is_active();
-        let state = state.clone();
-        let profile = profile.clone();
-        let status = status.clone();
-        let password = password.clone();
-        root.set_sensitive(false);
-        dialog.set_can_close(false);
-        glib::MainContext::default().spawn_local(async move {
-            if remember {
-                let Some(operation) = state.operation(&profile.uid) else {
-                    message(
-                        &status,
-                        "Профиль изменяется в другом окне. Повторите позже.",
-                        false,
-                    );
-                    root.set_sensitive(true);
-                    dialog.set_can_close(true);
-                    return;
-                };
-                let exists = state
-                    .store
-                    .profiles()
-                    .ok()
-                    .is_some_and(|profiles| profiles.iter().any(|p| p == &profile));
-                if !exists {
-                    message(
-                        &status,
-                        "Исходный профиль изменён или удалён. Откройте подключение заново.",
-                        false,
-                    );
-                    root.set_sensitive(true);
-                    dialog.set_can_close(true);
-                    return;
-                }
-                if let Err(error) = secrets::store(&profile.uid, &secret).await {
-                    message(&status, error, false);
-                    root.set_sensitive(true);
-                    dialog.set_can_close(true);
-                    return;
+    glib::MainContext::default().spawn_local(async move {
+        let result=secrets::lookup_rdp(&profile.uid).await;
+        drop(operation);
+        let (Some(parent),Some(tabs))=(weak_parent.upgrade(),weak_tabs.upgrade()) else { return; };
+        if let Ok(Some(secret))=result {
+            connect_saved(&parent,&tabs,state,&profile.uid,secret);return;
+        }
+        let prompt=adw::AlertDialog::builder().heading(format!("Пароль: {}",profile.name))
+            .body("Введите пароль для подключения. Остальные параметры меняются в настройках профиля.").build();
+        let fields=gtk::Box::new(gtk::Orientation::Vertical,8);
+        let password=gtk::PasswordEntry::builder().show_peek_icon(true).build();
+        let remember=gtk::CheckButton::with_label("Сохранить пароль на этом ПК");
+        fields.append(&password);fields.append(&remember);prompt.set_extra_child(Some(&fields));
+        prompt.add_responses(&[("cancel","Отмена"),("connect","Подключиться")]);
+        prompt.set_close_response("cancel");prompt.set_default_response(Some("connect"));
+        let weak_parent=parent.downgrade();let weak_tabs=tabs.downgrade();
+        let focus_password=password.clone();
+        prompt.connect_response(None,move |_,response| {
+            if response!="connect" { password.set_text("");return; }
+            let secret=Zeroizing::new(password.text().to_string());password.set_text("");
+            let remember=remember.is_active();
+            let state=state.clone();let uid=profile.uid.clone();
+            let weak_parent=weak_parent.clone();let weak_tabs=weak_tabs.clone();
+            glib::MainContext::default().spawn_local(async move {
+                let Some(operation)=state.operation(&uid) else { return; };
+                if !state.store.profiles().ok().is_some_and(|profiles|profiles.iter().any(|p|p.uid==uid)) { return; }
+                if remember {
+                    if let Err(error)=secrets::store(&uid,&secret).await {
+                        if let Some(parent)=weak_parent.upgrade(){
+                            let alert=adw::AlertDialog::builder().heading("Пароль не сохранён").body(error).build();
+                            alert.add_response("close","Закрыть");alert.present(Some(&parent));
+                        }
+                        return;
+                    }
                 }
                 drop(operation);
-            }
-            let mut history_profile = profile.clone();
-            history_profile.username = username.clone();
-            history_profile.domain = domain.clone();
-            let config = Config {
-                host: profile.host,
-                port: profile.port,
-                username,
-                domain,
-                password: secret,
-                width,
-                height,
-                keyboard_layout,
-                quality,
-            };
-            open(&tabs, state, history_profile, config);
-            password.set_text("");
-            dialog.set_can_close(true);
-            dialog.close();
+                if let (Some(parent),Some(tabs))=(weak_parent.upgrade(),weak_tabs.upgrade()){
+                    connect_saved(&parent,&tabs,state,&uid,secret);
+                }
+            });
         });
+        prompt.present(Some(&parent));focus_password.grab_focus();
     });
-    root.append(
-        &gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&form)
-            .build(),
-    );
-    dialog.set_child(Some(&root));
-    dialog.present(Some(parent));
 }
 
 fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config) {
@@ -249,6 +143,8 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     toolbar.append(&cad);
     let capture = gtk::ToggleButton::with_label("Захват клавиш");
     capture.set_tooltip_text(Some("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора."));
+    capture.set_focus_on_click(false);
+    capture.set_active(true);
     toolbar.append(&capture);
     let text_mode = gtk::CheckButton::with_label("Текст Unicode по локальной раскладке");
     let keyboard_mode = gtk::Label::new(Some("Раскладка: сервер"));
@@ -300,6 +196,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         }
     };
     let initial_size = (config.width, config.height);
+    let auto_resize = config.auto_resize;
     let (control, events) = match rdp::start(config) {
         Ok(session) => session,
         Err(error) => {
@@ -411,7 +308,25 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let trace_graphics = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
     let shown = Cell::new(0u64);
     let last_trace = Cell::new(std::time::Instant::now());
+    let measured = Cell::new(None);
+    let requested = Cell::new(None);
+    let changed_at = Cell::new(std::time::Instant::now());
     picture.add_tick_callback(move |picture, _| {
+        if auto_resize {
+            let dimensions =
+                rdp::desktop_size(picture.width(), picture.height(), picture.scale_factor());
+            if dimensions != measured.get() {
+                measured.set(dimensions);
+                changed_at.set(std::time::Instant::now());
+            }
+            if let Some((w, h)) = dimensions.filter(|value| {
+                Some(*value) != requested.get()
+                    && changed_at.get().elapsed() >= Duration::from_millis(200)
+            }) {
+                frame_control.resize(w, h);
+                requested.set(dimensions);
+            }
+        }
         let control = &frame_control;
         if let Some(frame) = control.take_frame() {
             size.set((frame.width, frame.height));

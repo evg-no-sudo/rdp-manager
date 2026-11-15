@@ -6,6 +6,7 @@
 #include <freerdp/gdi/gdi.h>
 #include <freerdp/gdi/gfx.h>
 #include <freerdp/client/rdpgfx.h>
+#include <freerdp/client/disp.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/event.h>
@@ -35,6 +36,10 @@ struct RdpBridge {
     pSurfaceFrameMarker surface_marker;
     pFrameMarker order_marker;
     RdpgfxClientContext* gfx;
+    DispClientContext* disp;
+    BOOL disp_ready;
+    UINT64 disp_max_area;
+    UINT32 desired_width, desired_height, sent_width, sent_height, resize_requests;
     pcRdpgfxStartFrame gfx_start;
     pcRdpgfxEndFrame gfx_end;
     UINT64 last_frame_ms;
@@ -88,8 +93,47 @@ static UINT gfx_surface_command(RdpgfxClientContext* gfx, const RDPGFX_SURFACE_C
     LeaveCriticalSection(&bridge->graphics_lock);
     return result;
 }
+static UINT display_caps(DispClientContext* disp, UINT32 monitors, UINT32 a, UINT32 b) {
+    RdpBridge* bridge = disp->custom;
+    EnterCriticalSection(&bridge->graphics_lock);
+    bridge->disp_max_area = (UINT64)a * b;
+    bridge->disp_ready = monitors > 0 && bridge->disp_max_area > 0;
+    LeaveCriticalSection(&bridge->graphics_lock);
+    return CHANNEL_RC_OK;
+}
+static void send_desktop_size(RdpBridge* bridge) {
+    EnterCriticalSection(&bridge->graphics_lock);
+    UINT32 w = bridge->desired_width, h = bridge->desired_height;
+    if (bridge->disp && bridge->disp_ready && w && h &&
+        (w != bridge->sent_width || h != bridge->sent_height)) {
+        if ((UINT64)w * h <= bridge->disp_max_area) {
+            DISPLAY_CONTROL_MONITOR_LAYOUT monitor = {0};
+            monitor.Flags = DISPLAY_CONTROL_MONITOR_PRIMARY;
+            monitor.Width = w; monitor.Height = h;
+            monitor.PhysicalWidth = (w * 254 + 480) / 960;
+            monitor.PhysicalHeight = (h * 254 + 480) / 960;
+            monitor.DesktopScaleFactor = 100; monitor.DeviceScaleFactor = 100;
+            if (bridge->disp->SendMonitorLayout(bridge->disp, 1, &monitor) == CHANNEL_RC_OK)
+                bridge->resize_requests++;
+            else bridge->disp_ready = FALSE;
+        }
+        bridge->sent_width = w; bridge->sent_height = h;
+    }
+    LeaveCriticalSection(&bridge->graphics_lock);
+}
 static void channel_connected(void* context, const ChannelConnectedEventArgs* event) {
     rdpContext* ctx = context;
+    if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) {
+        RdpBridge* bridge = bridge_of(ctx);
+        EnterCriticalSection(&bridge->graphics_lock);
+        bridge->disp = event->pInterface;
+        bridge->disp->custom = bridge;
+        bridge->disp->DisplayControlCaps = display_caps;
+        bridge->disp_ready = FALSE;
+        bridge->sent_width = bridge->sent_height = 0;
+        LeaveCriticalSection(&bridge->graphics_lock);
+        return;
+    }
     if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) != 0) return;
     RdpBridge* bridge = bridge_of(ctx);
     EnterCriticalSection(&bridge->graphics_lock);
@@ -112,6 +156,7 @@ static void channel_disconnected(void* context, const ChannelDisconnectedEventAr
     rdpContext* ctx = context;
     RdpBridge* bridge = bridge_of(ctx);
     EnterCriticalSection(&bridge->graphics_lock);
+    if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) { bridge->disp = NULL; bridge->disp_ready = FALSE; }
     if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0 && bridge->gfx) {
         if (ctx->gdi) gdi_graphics_pipeline_uninit(ctx->gdi, bridge->gfx);
         bridge->gfx = NULL;
@@ -132,7 +177,7 @@ static BOOL load_channels(freerdp* instance) {
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_AudioCapture, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportVideoOptimized, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportGeometryTracking, FALSE) ||
-        !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportDisplayControl, FALSE)) return FALSE;
+        !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportDisplayControl, TRUE)) return FALSE;
     if (freerdp_static_channel_collection_find(ctx->settings, "rdpsnd") &&
         !freerdp_client_del_static_channel(ctx->settings, "rdpsnd")) return FALSE;
     if (freerdp_dynamic_channel_collection_find(ctx->settings, "rdpsnd") &&
@@ -336,7 +381,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     const char* build = freerdp_get_build_config();
     const BOOL h264 = quality != 1 && build && strstr(build, "WITH_GFX_H264=ON");
     const char* decoder_mode = getenv("RDP_MANAGER_H264_DECODER");
-    const BOOL hw_request = h264 && strstr(build, "WITH_FFMPEG_HWACCEL=ON") &&
+    const BOOL hw_request = quality != 2 && h264 && strstr(build, "WITH_FFMPEG_HWACCEL=ON") &&
         (!decoder_mode || strcmp(decoder_mode, "software") != 0);
     /* GDI initialization stays ours; FreeRDP uses this setting to request GPU H264.
        The framebuffer still passes through CPU memory, not a zero-copy renderer. */
@@ -353,6 +398,8 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_RemoteFxCodec, TRUE);
     SET_BOOL(FreeRDP_NSCodec, TRUE);
     SET_BOOL(FreeRDP_RedirectClipboard, FALSE);
+    SET_BOOL(FreeRDP_DynamicResolutionUpdate, TRUE);
+    SET_BOOL(FreeRDP_DesktopResize, TRUE);
     SET_BOOL(FreeRDP_AsyncUpdate, FALSE);
     SET_BOOL(FreeRDP_AsyncChannels, FALSE);
     SET_BOOL(FreeRDP_BitmapCachePersistEnabled, FALSE);
@@ -371,6 +418,7 @@ int rdp_manager_connect(RdpBridge* bridge) {
 int rdp_manager_poll(RdpBridge* bridge) {
     rdpContext* ctx = bridge->instance->context;
     if (atomic_load(&bridge->cancelled) || freerdp_shall_disconnect_context(ctx)) return 0;
+    send_desktop_size(bridge);
     HANDLE handles[64] = { 0 };
     DWORD count = freerdp_get_event_handles(ctx, handles, 63);
     if (!count) return -1;
@@ -434,6 +482,12 @@ int rdp_manager_input(RdpBridge* bridge, uint32_t kind, uint16_t flags, uint16_t
         }
         case 4: return freerdp_input_send_keyboard_pause_event(input);
         case 5: return freerdp_input_send_focus_in_event(input, flags);
+        case 6:
+            if (a < 200 || b < 200 || a > 8192 || b > 8192 || (UINT64)a*b > 16777216) return 1;
+            EnterCriticalSection(&bridge->graphics_lock);
+            bridge->desired_width = a & ~1u; bridge->desired_height = b & ~1u;
+            LeaveCriticalSection(&bridge->graphics_lock);
+            return 1;
         default: return 0;
     }
 }
@@ -485,13 +539,13 @@ void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity
     rdpSettings* settings = bridge->instance->context->settings;
     const char* classic[] = {"bitmap", "RemoteFX", "NSCodec", "raw-surface", "other-surface"};
     snprintf(output, capacity,
-        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u keyboard_layout=%u paints=%llu frames=%llu copies=%llu copy_us=%llu input_wakes=%llu scans=%llu unicode=%llu hw_requested=%d rfx=%d nsc=%d",
+        "mode=%s channel_loads=%u classic_codec=%s codec_id=%u size=%ux%u keyboard_layout=%u paints=%llu frames=%llu copies=%llu copy_us=%llu input_wakes=%llu scans=%llu unicode=%llu hw_requested=%d disp_ready=%d resize_requests=%u rfx=%d nsc=%d",
         bridge->gfx ? "EGFX" : "classic", bridge->channel_loads, bridge->gfx ? "-" : classic[bridge->classic_codec], bridge->last_codec,
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopWidth),
         freerdp_settings_get_uint32(settings, FreeRDP_DesktopHeight),
         freerdp_settings_get_uint32(settings, FreeRDP_KeyboardLayout),
         (unsigned long long)atomic_load(&bridge->paints), (unsigned long long)bridge->complete_frames,
-        (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us, (unsigned long long)atomic_load(&bridge->input_wakes), (unsigned long long)atomic_load(&bridge->input_scans), (unsigned long long)atomic_load(&bridge->input_unicode), !freerdp_settings_get_bool(settings, FreeRDP_SoftwareGdi),
+        (unsigned long long)bridge->publications, (unsigned long long)bridge->copy_us, (unsigned long long)atomic_load(&bridge->input_wakes), (unsigned long long)atomic_load(&bridge->input_scans), (unsigned long long)atomic_load(&bridge->input_unicode), !freerdp_settings_get_bool(settings, FreeRDP_SoftwareGdi), bridge->disp_ready, bridge->resize_requests,
         freerdp_settings_get_bool(settings, FreeRDP_RemoteFxCodec),
         freerdp_settings_get_bool(settings, FreeRDP_NSCodec));
     if (gfx) LeaveCriticalSection(&gfx->mux);

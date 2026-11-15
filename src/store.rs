@@ -1,4 +1,4 @@
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::{error::Error, fs, path::Path};
 
 pub type Result<T> = std::result::Result<T, Box<dyn Error>>;
@@ -55,6 +55,33 @@ impl Profile {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionOptions {
+    pub keyboard_layout: u32,
+    pub quality: u32,
+    pub resolution: u32,
+}
+impl Default for SessionOptions {
+    fn default() -> Self {
+        Self {
+            keyboard_layout: 0x419,
+            quality: 1,
+            resolution: 0,
+        }
+    }
+}
+impl SessionOptions {
+    fn validate(&self) -> Result<()> {
+        if ![0x409, 0x419].contains(&self.keyboard_layout)
+            || self.quality > 2
+            || self.resolution > 3
+        {
+            return Err("Некорректные параметры сеанса.".into());
+        }
+        Ok(())
+    }
+}
+
 pub struct Store(Connection);
 
 pub struct HistoryEntry {
@@ -85,7 +112,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 4 {
+        if version > 5 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -145,7 +172,33 @@ impl Store {
             ); PRAGMA user_version=4;")?;
             transaction.commit()?;
         }
+        if version < 5 {
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS session_options (
+                profile_uid TEXT PRIMARY KEY REFERENCES profiles(uid) ON DELETE CASCADE,
+                keyboard_layout INTEGER NOT NULL, quality INTEGER NOT NULL,
+                resolution INTEGER NOT NULL
+            ); PRAGMA user_version=5;",
+            )?;
+        }
         Ok(Self(connection))
+    }
+
+    pub fn session_options(&self, uid: &str) -> Result<SessionOptions> {
+        let options = self.0.query_row("SELECT keyboard_layout,quality,resolution FROM session_options WHERE profile_uid=?1",
+            [uid], |row| Ok(SessionOptions { keyboard_layout:row.get(0)?, quality:row.get(1)?, resolution:row.get(2)? })).optional()?.unwrap_or_default();
+        options.validate()?;
+        Ok(options)
+    }
+    pub fn save_with_options(&self, profile: &Profile, options: &SessionOptions) -> Result<i64> {
+        options.validate()?;
+        let transaction = self.0.unchecked_transaction()?;
+        let id = self.save(profile)?;
+        self.0.execute("INSERT INTO session_options(profile_uid,keyboard_layout,quality,resolution) VALUES(?1,?2,?3,?4)
+            ON CONFLICT(profile_uid) DO UPDATE SET keyboard_layout=excluded.keyboard_layout,quality=excluded.quality,resolution=excluded.resolution",
+            params![profile.uid,options.keyboard_layout,options.quality,options.resolution])?;
+        transaction.commit()?;
+        Ok(id)
     }
 
     pub fn history_start(&self, p: &Profile) -> Result<i64> {
@@ -352,6 +405,69 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn session_options_persist_clone_independently_and_save_atomically() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("profiles.sqlite3");
+        let store = Store::open(&path)?;
+        let mut original = Profile {
+            name: "Template".into(),
+            host: "template.test".into(),
+            ..Default::default()
+        };
+        let options = SessionOptions {
+            keyboard_layout: 0x419,
+            quality: 1,
+            resolution: 0,
+        };
+        original.id = Some(store.save_with_options(&original, &options)?);
+        let mut copy = original.clone();
+        copy.id = None;
+        copy.uid = gtk::glib::uuid_string_random().into();
+        copy.name = "Template (копия)".into();
+        let copy_id = store.save_with_options(&copy, &options)?;
+        copy.id = Some(copy_id);
+        let changed = SessionOptions {
+            keyboard_layout: 0x409,
+            quality: 2,
+            resolution: 3,
+        };
+        store.save_with_options(&copy, &changed)?;
+        assert_eq!(store.session_options(&original.uid)?, options);
+        drop(store);
+        let store = Store::open(&path)?;
+        assert_eq!(store.session_options(&copy.uid)?, changed);
+        assert_eq!(store.profiles()?.len(), 2);
+        store.0.execute_batch(
+            "CREATE TRIGGER fail_options BEFORE INSERT ON session_options
+            WHEN NEW.resolution=2 BEGIN SELECT RAISE(ABORT,'fixture failure');END;",
+        )?;
+        let broken = Profile {
+            name: "Failed clone".into(),
+            host: "failed.test".into(),
+            ..Default::default()
+        };
+        assert!(store
+            .save_with_options(
+                &broken,
+                &SessionOptions {
+                    resolution: 2,
+                    ..Default::default()
+                }
+            )
+            .is_err());
+        assert_eq!(store.profiles()?.len(), 2);
+        store.delete(copy_id)?;
+        let remaining: i64 = store.0.query_row(
+            "SELECT count(*) FROM session_options WHERE profile_uid=?1",
+            [&copy.uid],
+            |row| row.get(0),
+        )?;
+        assert_eq!(remaining, 0);
+        assert_eq!(store.session_options(&original.uid)?, options);
+        Ok(())
+    }
 
     #[test]
     fn profile_lifecycle_persists_and_rejects_invalid_data() -> Result<()> {

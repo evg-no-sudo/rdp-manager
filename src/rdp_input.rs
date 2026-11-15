@@ -120,6 +120,27 @@ fn point(picture: &gtk::Picture, x: f64, y: f64, size: (u32, u32)) -> Option<(u1
     )
 }
 
+fn update_capture(
+    picture: &gtk::Picture,
+    captured: &Rc<RefCell<Option<gdk::Toplevel>>>,
+    wanted: bool,
+) {
+    let previous = captured.borrow_mut().take();
+    if let Some(top) = previous {
+        top.restore_system_shortcuts();
+    }
+    if wanted && picture.has_focus() {
+        if let Some(top) = picture
+            .native()
+            .and_then(|native| native.surface())
+            .and_then(|surface| surface.downcast::<gdk::Toplevel>().ok())
+        {
+            top.inhibit_system_shortcuts(None::<&gdk::Event>);
+            *captured.borrow_mut() = Some(top);
+        }
+    }
+}
+
 pub fn attach(
     picture: &gtk::Picture,
     control: Arc<Control>,
@@ -131,21 +152,11 @@ pub fn attach(
     let weak = picture.downgrade();
     let grabbed = captured.clone();
     capture.connect_toggled(move |button| {
-        if let Some(top) = grabbed.borrow_mut().take() {
-            top.restore_system_shortcuts();
-        }
-        if button.is_active() {
-            if let Some(picture) = weak.upgrade() {
+        if let Some(picture) = weak.upgrade() {
+            if button.is_active() {
                 picture.grab_focus();
-                if let Some(top) = picture
-                    .native()
-                    .and_then(|n| n.surface())
-                    .and_then(|s| s.downcast::<gdk::Toplevel>().ok())
-                {
-                    top.inhibit_system_shortcuts(None::<&gdk::Event>);
-                    *grabbed.borrow_mut() = Some(top);
-                }
             }
+            update_capture(&picture, &grabbed, button.is_active());
         }
     });
     let text_mode = text_mode.downgrade();
@@ -374,7 +385,14 @@ pub fn attach(
     let focus = gtk::EventControllerFocus::new();
     let input = im.clone();
     let sender = control.clone();
+    let capture_enter = capture.downgrade();
+    let weak_picture = picture.downgrade();
+    let captured_enter = captured.clone();
     focus.connect_enter(move |_| {
+        if let (Some(button), Some(picture)) = (capture_enter.upgrade(), weak_picture.upgrade()) {
+            update_capture(&picture, &captured_enter, button.is_active());
+        }
+
         input.focus_in();
         sender.send(Input {
             kind: 5,
@@ -383,22 +401,14 @@ pub fn attach(
             b: 0,
         });
     });
-    let capture_unrealize = capture.downgrade();
     let grabbed = captured.clone();
     picture.connect_unrealize(move |_| {
-        if let Some(button) = capture_unrealize.upgrade() {
-            button.set_active(false);
-        }
         if let Some(top) = grabbed.borrow_mut().take() {
             top.restore_system_shortcuts();
         }
     });
     let sender = control;
-    let capture_focus = capture.downgrade();
     focus.connect_leave(move |_| {
-        if let Some(button) = capture_focus.upgrade() {
-            button.set_active(false);
-        }
         if let Some(top) = captured.borrow_mut().take() {
             top.restore_system_shortcuts();
         }

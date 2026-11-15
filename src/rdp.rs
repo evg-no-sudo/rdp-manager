@@ -76,6 +76,21 @@ pub fn diagnostics() -> String {
     format!("FreeRDP build capabilities (not proof of active GPU decoding):\n{flags}\nPresentation: GDI -> CPU copy -> GDK MemoryTexture; zero-copy not implemented.")
 }
 
+pub fn desktop_size(width: i32, height: i32, scale: i32) -> Option<(u16, u16)> {
+    if width < 1 || height < 1 || scale < 1 {
+        return None;
+    }
+    let w = f64::from(width) * f64::from(scale);
+    let h = f64::from(height) * f64::from(scale);
+    let factor = 1.0f64
+        .min(8192.0 / w)
+        .min(8192.0 / h)
+        .min((16777216.0 / (w * h)).sqrt());
+    let w = ((w * factor) as u32).clamp(200, 8192) & !1;
+    let h = ((h * factor) as u32).clamp(200, 8192) & !1;
+    Some((w as u16, h as u16))
+}
+
 pub struct Config {
     pub host: String,
     pub port: u16,
@@ -86,6 +101,7 @@ pub struct Config {
     pub height: u32,
     pub keyboard_layout: u32,
     pub quality: u32,
+    pub auto_resize: bool,
 }
 #[derive(Debug)]
 pub struct Certificate {
@@ -158,6 +174,7 @@ pub struct Control {
     tx: SyncSender<Input>,
     motion: Mutex<Option<Input>>,
     frame: Mutex<Option<Frame>>,
+    resize: Mutex<Option<(u16, u16)>>,
 }
 impl Control {
     fn wake_input(&self) {
@@ -217,6 +234,12 @@ impl Control {
         for &code in codes.iter().rev() {
             self.send(Input::scan(code, false, false));
         }
+    }
+    pub fn resize(&self, width: u16, height: u16) {
+        if let Ok(mut pending) = self.resize.lock() {
+            *pending = Some((width, height));
+        }
+        self.wake_input();
     }
     pub fn motion(&self, x: u16, y: u16) {
         if let Ok(mut motion) = self.motion.lock() {
@@ -370,6 +393,7 @@ pub fn start(config: Config) -> Result<(Arc<Control>, Receiver<Event>), String> 
         tx,
         motion: Mutex::new(None),
         frame: Mutex::new(None),
+        resize: Mutex::new(None),
     });
     let worker = control.clone();
     std::thread::Builder::new()
@@ -515,6 +539,16 @@ fn run(
                     break;
                 }
             }
+            if let Some((w, h)) = control
+                .resize
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.take())
+            {
+                unsafe {
+                    rdp_manager_input(native, 6, 0, w, h);
+                }
+            }
             if unsafe { rdp_manager_poll(native) } <= 0 {
                 break;
             }
@@ -577,6 +611,7 @@ mod tests {
             tx,
             motion: Mutex::new(None),
             frame: Mutex::new(None),
+            resize: Mutex::new(None),
         });
         let mut callbacks = Callbacks {
             control: control.clone(),
@@ -610,6 +645,15 @@ mod tests {
         assert!(frame_size(0, 1, 0).is_none());
     }
     #[test]
+    fn desktop_dimensions_match_window_scale_and_protocol_limits() {
+        assert_eq!(desktop_size(1281, 721, 1), Some((1280, 720)));
+        assert_eq!(desktop_size(800, 600, 2), Some((1600, 1200)));
+        assert_eq!(desktop_size(8192, 8192, 1), Some((4096, 4096)));
+        assert_eq!(desktop_size(1, 1, 1), Some((200, 200)));
+        assert_eq!(desktop_size(0, 720, 1), None);
+    }
+
+    #[test]
     fn pointer_coordinates_include_scale_and_letterbox() {
         assert_eq!(
             remote_point(500.0, 400.0, 1000.0, 800.0, 1280, 720),
@@ -640,6 +684,7 @@ mod tests {
             password: Zeroizing::new("fixture-password".into()),
             width: 640,
             height: 480,
+            auto_resize: false,
             keyboard_layout: 0x419,
             quality: 0,
         };
@@ -871,6 +916,20 @@ mod tests {
             received,
             "No negotiated EGFX frame (check LoadChannels callback)"
         );
+        control.resize(1312, 776);
+        let deadline = std::time::Instant::now() + Duration::from_secs(3);
+        let mut resized = false;
+        while std::time::Instant::now() < deadline {
+            if std::fs::read_to_string(root.join("input.log"))
+                .unwrap()
+                .contains("DISP:1312:776")
+            {
+                resized = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(resized, "Display-control layout did not reach the server");
         control.stop();
         loop {
             if matches!(

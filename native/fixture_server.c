@@ -7,6 +7,7 @@
 #include <freerdp/channels/wtsvc.h>
 #include <freerdp/channels/channels.h>
 #include <freerdp/server/rdpgfx.h>
+#include <freerdp/server/disp.h>
 #include <freerdp/crypto/certificate.h>
 #include <freerdp/crypto/privatekey.h>
 #include <winpr/synch.h>
@@ -19,7 +20,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-typedef struct {FILE* log;BOOL activated;BOOL painted;UINT64 end_at;BOOL gfx_ready;RdpgfxServerContext* gfx;} Fixture;
+typedef struct {FILE* log;BOOL activated;BOOL painted;UINT64 end_at;BOOL gfx_ready;RdpgfxServerContext* gfx;DispServerContext* disp;} Fixture;
 static BOOL active(freerdp_peer* peer){
     Fixture* f=peer->ContextExtra;f->activated=TRUE;
     fprintf(f->log,"LAYOUT:%u\n",freerdp_settings_get_uint32(peer->context->settings,FreeRDP_KeyboardLayout));fflush(f->log);
@@ -36,6 +37,12 @@ static BOOL paint(freerdp_peer* peer){
     rectangle.bitmapLength=sizeof(pixels);rectangle.bitmapDataStream=pixels;rectangle.compressed=FALSE;
     BITMAP_UPDATE update={0};update.number=1;update.rectangles=&rectangle;update.skipCompression=TRUE;
     return peer->context->update->BitmapUpdate(peer->context,&update);
+}
+static UINT monitor_layout(DispServerContext* context,const DISPLAY_CONTROL_MONITOR_LAYOUT_PDU* pdu){
+    Fixture* f=context->custom;
+    if(pdu->NumMonitors!=1)return ERROR_INVALID_DATA;
+    fprintf(f->log,"DISP:%u:%u\n",pdu->Monitors[0].Width,pdu->Monitors[0].Height);fflush(f->log);
+    return CHANNEL_RC_OK;
 }
 static UINT gfx_caps(RdpgfxServerContext* gfx,const RDPGFX_CAPS_ADVERTISE_PDU* caps){
     fprintf(stderr,"GFX caps received count=%u\n",caps->capsSetCount);
@@ -112,6 +119,11 @@ int main(int argc,char** argv){
                 if(state!=previous_state){fprintf(stderr,"GFX state=%d activated=%d joined=%d\n",state,fixture.activated,WTSVirtualChannelManagerIsChannelJoined(vcm,"drdynvc"));previous_state=state;}
                 if(fixture.activated&&!fixture.gfx&&WTSVirtualChannelManagerGetDrdynvcState(vcm)==DRDYNVC_STATE_READY){
                     fprintf(stderr,"GFX opening\n");
+                    fixture.disp=disp_server_context_new(vcm);if(!fixture.disp)break;
+                    fixture.disp->rdpcontext=peer->context;fixture.disp->custom=&fixture;
+                    fixture.disp->MaxNumMonitors=1;fixture.disp->MaxMonitorAreaFactorA=4096;fixture.disp->MaxMonitorAreaFactorB=4096;
+                    fixture.disp->DispMonitorLayout=monitor_layout;
+                    if(fixture.disp->Open(fixture.disp)||fixture.disp->DisplayControlCaps(fixture.disp))break;
                     fixture.gfx=rdpgfx_server_context_new(vcm);if(!fixture.gfx)break;
                     fixture.gfx->rdpcontext=peer->context;fixture.gfx->custom=&fixture;fixture.gfx->CapsAdvertise=gfx_caps;
                     if(!fixture.gfx->Initialize(fixture.gfx,TRUE)||!fixture.gfx->Open(fixture.gfx))break;
@@ -139,6 +151,7 @@ int main(int argc,char** argv){
                 fixture.end_at=0;
             }
         }
+        if(fixture.disp){fixture.disp->Close(fixture.disp);disp_server_context_free(fixture.disp);}
         if(fixture.gfx){fixture.gfx->Close(fixture.gfx);rdpgfx_server_context_free(fixture.gfx);}
         if(vcm)WTSCloseServer(vcm);
         peer->Disconnect(peer);freerdp_peer_context_free(peer);freerdp_peer_free(peer);
