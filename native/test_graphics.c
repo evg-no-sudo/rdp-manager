@@ -35,6 +35,11 @@ int main(int argc,char** argv){
     assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_SoftwareGdi));
     if(strstr(freerdp_get_build_config(),"WITH_GFX_H264=ON"))assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_GfxH264));
     rdp_manager_free(compatibility);
+    RdpBridge* avc444=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,4,&probe,capture,cert);
+    assert(avc444);
+    assert(freerdp_settings_get_uint32(avc444->instance->context->settings,FreeRDP_GfxCapsFilter)==(1u<<1));
+    assert(freerdp_settings_get_bool(avc444->instance->context->settings,FreeRDP_SupportGraphicsPipeline));
+    rdp_manager_free(avc444);
     rdp_manager_prepare_input(bridge);
     assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);
     rdp_manager_wake(bridge);

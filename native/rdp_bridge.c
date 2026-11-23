@@ -378,6 +378,9 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_AutoDenyCertificate, FALSE);
     SET_BOOL(FreeRDP_CertificateCallbackPreferPEM, TRUE);
     SET_BOOL(FreeRDP_SupportGraphicsPipeline, quality != 3);
+    /* Capability 8.1 advertises AVC420. In the AVC444 preset omit it, while
+       keeping version 8 and 10+ so a server can choose a non-AVC fallback. */
+    SET_UINT(FreeRDP_GfxCapsFilter, quality == 4 ? (1u << 1) : 0);
     const char* build = freerdp_get_build_config();
     const BOOL h264 = quality != 1 && quality != 3 && build && strstr(build, "WITH_GFX_H264=ON");
     const char* decoder_mode = getenv("RDP_MANAGER_H264_DECODER");

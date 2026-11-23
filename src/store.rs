@@ -73,7 +73,7 @@ impl Default for SessionOptions {
 impl SessionOptions {
     fn validate(&self) -> Result<()> {
         if ![0x409, 0x419].contains(&self.keyboard_layout)
-            || self.quality > 3
+            || self.quality > 4
             || self.resolution > 3
         {
             return Err("Некорректные параметры сеанса.".into());
