@@ -10,6 +10,7 @@ export CARGO_TARGET_DIR="$root/target/h264"
 cargo build --release --locked
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 test -n "$version"
+version="$version-1"
 out="$root/target/dist"
 mkdir -p "$out"
 work=$(mktemp -d "$out/deb.XXXXXXXX")
@@ -25,7 +26,7 @@ for lib in libfreerdp-client3 libfreerdp3 libwinpr3; do
     printf '%s 3 rdp-manager\n' "$lib" >>"$work/debian/shlibs.local"
 done
 install -Dm644 "data/$id.desktop" "$stage/usr/share/applications/$id.desktop"
-install -Dm644 "data/icons/hicolor/scalable/apps/$id.svg" "$stage/usr/share/icons/hicolor/scalable/apps/$id.svg"
+cp -R data/icons "$stage/usr/share/"
 install -Dm644 "$root/.deps/src/FreeRDP-3.32.2/LICENSE" "$stage/usr/share/doc/rdp-manager/copyright.FreeRDP"
 cat >"$stage/usr/bin/rdp-manager" <<'LAUNCHER'
 #!/bin/sh
