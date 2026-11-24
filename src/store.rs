@@ -60,6 +60,7 @@ pub struct SessionOptions {
     pub keyboard_layout: u32,
     pub quality: u32,
     pub resolution: u32,
+    pub shared_folder: String,
 }
 impl Default for SessionOptions {
     fn default() -> Self {
@@ -67,6 +68,7 @@ impl Default for SessionOptions {
             keyboard_layout: 0x419,
             quality: 1,
             resolution: 0,
+            shared_folder: String::new(),
         }
     }
 }
@@ -75,6 +77,10 @@ impl SessionOptions {
         if ![0x409, 0x419].contains(&self.keyboard_layout)
             || self.quality > 4
             || self.resolution > 3
+            || (!self.shared_folder.is_empty()
+                && (!std::path::Path::new(&self.shared_folder).is_absolute()
+                    || self.shared_folder.chars().any(char::is_control)
+                    || self.shared_folder.len() > 4096))
         {
             return Err("Некорректные параметры сеанса.".into());
         }
@@ -112,7 +118,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 5 {
+        if version > 6 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -181,12 +187,18 @@ impl Store {
             ); PRAGMA user_version=5;",
             )?;
         }
+        if version < 6 {
+            connection.execute_batch(
+                "ALTER TABLE session_options ADD COLUMN shared_folder TEXT NOT NULL DEFAULT '';
+                PRAGMA user_version=6;",
+            )?;
+        }
         Ok(Self(connection))
     }
 
     pub fn session_options(&self, uid: &str) -> Result<SessionOptions> {
-        let options = self.0.query_row("SELECT keyboard_layout,quality,resolution FROM session_options WHERE profile_uid=?1",
-            [uid], |row| Ok(SessionOptions { keyboard_layout:row.get(0)?, quality:row.get(1)?, resolution:row.get(2)? })).optional()?.unwrap_or_default();
+        let options = self.0.query_row("SELECT keyboard_layout,quality,resolution,shared_folder FROM session_options WHERE profile_uid=?1",
+            [uid], |row| Ok(SessionOptions { keyboard_layout:row.get(0)?, quality:row.get(1)?, resolution:row.get(2)?, shared_folder:row.get(3)? })).optional()?.unwrap_or_default();
         options.validate()?;
         Ok(options)
     }
@@ -194,9 +206,9 @@ impl Store {
         options.validate()?;
         let transaction = self.0.unchecked_transaction()?;
         let id = self.save(profile)?;
-        self.0.execute("INSERT INTO session_options(profile_uid,keyboard_layout,quality,resolution) VALUES(?1,?2,?3,?4)
-            ON CONFLICT(profile_uid) DO UPDATE SET keyboard_layout=excluded.keyboard_layout,quality=excluded.quality,resolution=excluded.resolution",
-            params![profile.uid,options.keyboard_layout,options.quality,options.resolution])?;
+        self.0.execute("INSERT INTO session_options(profile_uid,keyboard_layout,quality,resolution,shared_folder) VALUES(?1,?2,?3,?4,?5)
+            ON CONFLICT(profile_uid) DO UPDATE SET keyboard_layout=excluded.keyboard_layout,quality=excluded.quality,resolution=excluded.resolution,shared_folder=excluded.shared_folder",
+            params![profile.uid,options.keyboard_layout,options.quality,options.resolution,options.shared_folder])?;
         transaction.commit()?;
         Ok(id)
     }
@@ -407,6 +419,24 @@ mod tests {
     use super::*;
 
     #[test]
+    fn schema_five_adds_local_shared_folder_without_changing_existing_options() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("profiles.sqlite3");
+        let old = Connection::open(&path)?;
+        old.execute_batch("CREATE TABLE profiles(id INTEGER PRIMARY KEY, uid TEXT UNIQUE, name TEXT, host TEXT, port INTEGER, username TEXT, domain TEXT);
+            CREATE TABLE session_options(profile_uid TEXT PRIMARY KEY, keyboard_layout INTEGER NOT NULL, quality INTEGER NOT NULL, resolution INTEGER NOT NULL);
+            INSERT INTO profiles(id,uid,name,host,port,username,domain) VALUES(1,'legacy','Legacy','host',3389,'','');
+            INSERT INTO session_options(profile_uid,keyboard_layout,quality,resolution) VALUES('legacy',1049,4,0);
+            PRAGMA user_version=5;")?;
+        drop(old);
+        let store = Store::open(&path)?;
+        let options = store.session_options("legacy")?;
+        assert_eq!(options.quality, 4);
+        assert!(options.shared_folder.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn session_options_persist_clone_independently_and_save_atomically() -> Result<()> {
         let directory = tempfile::tempdir()?;
         let path = directory.path().join("profiles.sqlite3");
@@ -420,6 +450,7 @@ mod tests {
             keyboard_layout: 0x419,
             quality: 1,
             resolution: 0,
+            shared_folder: "/tmp/rdp-share".into(),
         };
         original.id = Some(store.save_with_options(&original, &options)?);
         let mut copy = original.clone();
@@ -432,6 +463,7 @@ mod tests {
             keyboard_layout: 0x409,
             quality: 3,
             resolution: 3,
+            shared_folder: "/tmp/other-share".into(),
         };
         store.save_with_options(&copy, &changed)?;
         assert_eq!(store.session_options(&original.uid)?, options);
@@ -548,7 +580,9 @@ mod tests {
         store.trust_sftp_host("ssh.test", 22, b"public-key")?;
         let expected = store.profiles()?;
         let Store(connection) = store;
-        connection.execute_batch("DROP TABLE session_history;PRAGMA user_version=3;")?;
+        connection.execute_batch(
+            "DROP TABLE session_history;DROP TABLE session_options;PRAGMA user_version=3;",
+        )?;
         let store = Store::initialize(connection)?;
         assert_eq!(store.profiles()?, expected);
         assert_eq!(

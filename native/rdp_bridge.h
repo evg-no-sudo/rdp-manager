@@ -10,7 +10,7 @@ typedef void (*RdpClipboard)(void*, const char*);
 int rdp_manager_initialize(void);
 const char* rdp_manager_build_config(void);
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
-                          const char* password, const char* domain, uint32_t width, uint32_t height,
+                          const char* password, const char* domain, const char* shared_folder, uint32_t width, uint32_t height,
                           uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate, RdpClipboard clipboard);
 int rdp_manager_clipboard_set_text(RdpBridge*, const char*);
 int rdp_manager_connect(RdpBridge*);

@@ -35,6 +35,16 @@ fn connect_saved(
             .find(|p| p.uid == uid)
             .ok_or("Подключение удалено")?;
         let options = state.store.session_options(uid)?;
+        let shared_folder = if options.shared_folder.is_empty() {
+            String::new()
+        } else {
+            let path = std::fs::canonicalize(&options.shared_folder)
+                .map_err(|_| "Общая папка недоступна. Проверьте путь в настройках профиля.")?;
+            if !path.is_dir() {
+                return Err("Общая папка должна быть каталогом.".into());
+            }
+            path.to_string_lossy().into_owned()
+        };
         let (width, height) = match options.resolution {
             1 => (1280, 720),
             2 => (1600, 900),
@@ -49,6 +59,7 @@ fn connect_saved(
             username: profile.username.clone(),
             domain: profile.domain.clone(),
             password: secret,
+            shared_folder,
             width,
             height,
             keyboard_layout: options.keyboard_layout,

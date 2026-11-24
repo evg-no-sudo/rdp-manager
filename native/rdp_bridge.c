@@ -423,9 +423,9 @@ static DWORD verify_changed_certificate(freerdp* instance, const char* host, UIN
 }
 
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
-    const char* password, const char* domain, uint32_t width, uint32_t height,
+    const char* password, const char* domain, const char* shared_folder, uint32_t width, uint32_t height,
     uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate, RdpClipboard clipboard) {
-    if (!host || !user || !password || !domain || !frame || !certificate || !port ||
+    if (!host || !user || !password || !domain || !shared_folder || !frame || !certificate || !port ||
         !clipboard || !width || !height || width > 8192 || height > 8192 || (uint64_t)width * height > 16777216) return NULL;
     RdpBridge* bridge = calloc(1, sizeof(*bridge));
     if (!bridge) return NULL;
@@ -498,6 +498,10 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     SET_BOOL(FreeRDP_FrameMarkerCommandEnabled, TRUE);
     SET_BOOL(FreeRDP_AudioPlayback, FALSE);
     SET_BOOL(FreeRDP_RedirectDrives, FALSE);
+    if (shared_folder[0]) {
+        const char* const params[] = { "drive", "RDP-Share", shared_folder };
+        if (!freerdp_client_add_device_channel(settings, 3, params)) goto fail;
+    }
     SET_BOOL(FreeRDP_RedirectSmartCards, FALSE);
     SET_BOOL(FreeRDP_RemoteFxCodec, quality != 3);
     SET_BOOL(FreeRDP_NSCodec, quality != 3);

@@ -204,6 +204,46 @@ fn edit_draft(
         ],
         options.resolution,
     );
+    let shared_folder = adw::EntryRow::builder()
+        .title("Общая папка на этом ПК (необязательно)")
+        .text(&options.shared_folder)
+        .build();
+    let browse_folder = gtk::Button::builder()
+        .icon_name("folder-open-symbolic")
+        .tooltip_text("Выбрать папку")
+        .valign(gtk::Align::Center)
+        .build();
+    shared_folder.add_suffix(&browse_folder);
+    let clear_folder = gtk::Button::builder()
+        .icon_name("edit-clear-symbolic")
+        .tooltip_text("Отключить общую папку")
+        .valign(gtk::Align::Center)
+        .build();
+    shared_folder.add_suffix(&clear_folder);
+    let folder_to_clear = shared_folder.downgrade();
+    clear_folder.connect_clicked(move |_| {
+        if let Some(folder) = folder_to_clear.upgrade() {
+            folder.set_text("");
+        }
+    });
+    let weak_window = parent.downgrade();
+    let folder_to_choose = shared_folder.downgrade();
+    browse_folder.connect_clicked(move |_| {
+        let (Some(window), Some(folder)) = (weak_window.upgrade(), folder_to_choose.upgrade())
+        else {
+            return;
+        };
+        gtk::glib::MainContext::default().spawn_local(async move {
+            let chooser = gtk::FileDialog::new();
+            chooser.set_title("Папка для передачи файлов по RDP");
+            if let Ok(file) = chooser.select_folder_future(Some(&window)).await {
+                if let Some(path) = file.path() {
+                    folder.set_text(&path.to_string_lossy());
+                }
+            }
+        });
+    });
+    advanced.add_row(&shared_folder);
     let advanced_group = adw::PreferencesGroup::new();
     advanced_group.add(&advanced);
     form.append(&advanced_group);
@@ -297,7 +337,7 @@ fn edit_draft(
                 username: username.text().trim().into(),
                 domain: domain.text().trim().into(),
             }, &SessionOptions { keyboard_layout:if keyboard_layout.selected()==0 {0x419}else{0x409},
-                quality:quality.selected(), resolution:resolution.selected() })
+                quality:quality.selected(), resolution:resolution.selected(), shared_folder:shared_folder.text().trim().into() })
         })();
         let id = match result {
             Ok(id) => id,

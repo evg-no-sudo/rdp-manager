@@ -36,6 +36,7 @@ extern "C" {
         user: *const c_char,
         password: *const c_char,
         domain: *const c_char,
+        shared_folder: *const c_char,
         width: u32,
         height: u32,
         keyboard_layout: u32,
@@ -100,6 +101,7 @@ pub struct Config {
     pub username: String,
     pub domain: String,
     pub password: Zeroizing<String>,
+    pub shared_folder: String,
     pub width: u32,
     pub height: u32,
     pub keyboard_layout: u32,
@@ -487,6 +489,8 @@ fn run(
     let host = CString::new(config.host).map_err(|_| "Некорректный адрес сервера.")?;
     let user = CString::new(config.username).map_err(|_| "Некорректный пользователь.")?;
     let domain = CString::new(config.domain).map_err(|_| "Некорректный домен.")?;
+    let shared_folder =
+        CString::new(config.shared_folder).map_err(|_| "Некорректная общая папка.")?;
     let pass = CString::new(config.password.as_str())
         .map_err(|_| "Пароль содержит недопустимый символ.")?;
     let native = unsafe {
@@ -496,6 +500,7 @@ fn run(
             user.as_ptr(),
             pass.as_ptr(),
             domain.as_ptr(),
+            shared_folder.as_ptr(),
             config.width,
             config.height,
             config.keyboard_layout,
@@ -723,6 +728,7 @@ mod tests {
             username: "fixture".into(),
             domain: String::new(),
             password: Zeroizing::new("fixture-password".into()),
+            shared_folder: String::new(),
             width: 640,
             height: 480,
             auto_resize: false,

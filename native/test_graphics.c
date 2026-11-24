@@ -34,17 +34,22 @@ int main(int argc,char** argv){
     assert(argc==2);
     assert(rdp_manager_initialize());
     Probe probe={.expected=0x11};
-    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,3,&probe,capture,cert,clipboard);
+    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","","",640,480,0x419,3,&probe,capture,cert,clipboard);
     assert(bridge&&rdp_manager_connect(bridge));
-    RdpBridge* compatibility=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,2,&probe,capture,cert,clipboard);
+    RdpBridge* compatibility=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","","",640,480,0x419,2,&probe,capture,cert,clipboard);
     assert(compatibility);
     assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_SoftwareGdi));
     if(strstr(freerdp_get_build_config(),"WITH_GFX_H264=ON"))assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_GfxH264));
     rdp_manager_free(compatibility);
-    RdpBridge* avc444=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,4,&probe,capture,cert,clipboard);
+    RdpBridge* avc444=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","","",640,480,0x419,4,&probe,capture,cert,clipboard);
     assert(avc444);
     assert(freerdp_settings_get_uint32(avc444->instance->context->settings,FreeRDP_GfxCapsFilter)==(1u<<1));
     assert(freerdp_settings_get_bool(avc444->instance->context->settings,FreeRDP_SupportGraphicsPipeline));
+    RdpBridge* shared=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","","/tmp",640,480,0x419,4,&probe,capture,cert,clipboard);
+    assert(shared);
+    assert(freerdp_settings_get_bool(shared->instance->context->settings,FreeRDP_DeviceRedirection));
+    assert(freerdp_device_collection_find_type(shared->instance->context->settings,RDPDR_DTYP_FILESYSTEM));
+    rdp_manager_free(shared);
     CliprdrClientContext clip={.custom=avc444,.ClientCapabilities=clip_caps,.ClientFormatList=clip_list,
         .ClientFormatListResponse=clip_list_reply,.ClientFormatDataRequest=clip_data_request,.ClientFormatDataResponse=clip_data_reply};
     avc444->clipboard=&clip;
