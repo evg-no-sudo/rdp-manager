@@ -17,14 +17,23 @@ mod webdav_ui;
 
 use adw::prelude::*;
 
+const APP_ID: &str = "io.github.rdpmanager.RdpManager";
+
 fn main() -> gtk::glib::ExitCode {
     if std::env::args().skip(1).any(|arg| arg == "--diagnostics") {
         println!("{}", rdp::diagnostics());
         return gtk::glib::ExitCode::SUCCESS;
     }
-    let app = adw::Application::builder()
-        .application_id("io.github.rdpmanager.RdpManager")
-        .build();
+    let app = adw::Application::builder().application_id(APP_ID).build();
+    app.connect_startup(|_| {
+        if let (Some(display), Some(path)) = (
+            gtk::gdk::Display::default(),
+            std::env::var_os("RDP_MANAGER_ICON_PATH"),
+        ) {
+            gtk::IconTheme::for_display(&display).add_search_path(std::path::PathBuf::from(path));
+        }
+        gtk::Window::set_default_icon_name(APP_ID);
+    });
     app.connect_activate(|app| {
         if let Some(window) = app.active_window() {
             window.present();

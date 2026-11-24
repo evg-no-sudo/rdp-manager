@@ -8,6 +8,7 @@ if [ ! -f "$prefix/lib/pkgconfig/freerdp-client3.pc" ]; then
 fi
 export PKG_CONFIG_PATH="$prefix/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
 export LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export RDP_MANAGER_ICON_PATH="$root/data/icons"
 export CARGO_TARGET_DIR="$root/target/h264"
 . "$root/scripts/h264-backend.sh"
 backend=${RDP_MANAGER_H264_BACKEND:-auto}
