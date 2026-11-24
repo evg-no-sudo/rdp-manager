@@ -19,6 +19,7 @@ fn message(label: &gtk::Label, text: &str, success: bool) {
     label.remove_css_class("error");
     label.add_css_class(if success { "success" } else { "error" });
     label.set_text(text);
+    label.set_tooltip_text(Some(text));
     label.set_visible(true);
 }
 fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
@@ -361,9 +362,12 @@ fn toggle_fullscreen(widget: &impl IsA<gtk::Widget>) {
     }
 }
 
+pub(crate) const SESSION_TOOLBAR: &str = "rdp-session-toolbar";
+
 fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    toolbar.set_widget_name(SESSION_TOOLBAR);
     toolbar.set_margin_start(12);
     toolbar.set_margin_end(12);
     let status = gtk::Label::builder()

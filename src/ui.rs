@@ -81,6 +81,52 @@ impl Drop for Operation {
     }
 }
 
+fn place_session_toolbar(
+    tabs: &adw::TabView,
+    bar: &adw::TabBar,
+    owner: &RefCell<Option<gtk::glib::WeakRef<gtk::Box>>>,
+    fullscreen: bool,
+) {
+    use gtk::pango::EllipsizeMode;
+
+    let page = tabs
+        .selected_page()
+        .and_then(|page| page.child().downcast::<gtk::Box>().ok());
+    let previous = owner.borrow().as_ref().and_then(|owner| owner.upgrade());
+    if fullscreen && previous.is_some() && previous == page {
+        return;
+    }
+    if let Some(toolbar) = bar.end_action_widget() {
+        bar.set_end_action_widget(None::<&gtk::Widget>);
+        if let Some(status) = toolbar.first_child().and_downcast::<gtk::Label>() {
+            status.set_wrap(true);
+            status.set_ellipsize(EllipsizeMode::None);
+            status.set_max_width_chars(-1);
+        }
+        if let Some(previous) = previous {
+            previous.prepend(&toolbar);
+        }
+    }
+    owner.replace(None);
+    if fullscreen {
+        if let Some(page) = page {
+            if let Some(toolbar) = page
+                .first_child()
+                .filter(|child| child.widget_name() == crate::rdp_ui::SESSION_TOOLBAR)
+            {
+                if let Some(status) = toolbar.first_child().and_downcast::<gtk::Label>() {
+                    status.set_wrap(false);
+                    status.set_max_width_chars(18);
+                    status.set_ellipsize(EllipsizeMode::End);
+                }
+                page.remove(&toolbar);
+                bar.set_end_action_widget(Some(&toolbar));
+                owner.replace(Some(page.downgrade()));
+            }
+        }
+    }
+}
+
 pub fn create_window(
     app: &adw::Application,
     state: Rc<State>,
@@ -315,11 +361,41 @@ fn create_session_window(
     content.append(&tabs);
     body.set_end_child(Some(&content));
     root.append(&body);
+    let toolbar_owner = Rc::new(RefCell::new(None));
+    let sync_toolbar = {
+        let bar = bar.downgrade();
+        let owner = toolbar_owner.clone();
+        move |tabs: &adw::TabView| {
+            if let Some(bar) = bar.upgrade() {
+                let fullscreen = tabs
+                    .root()
+                    .and_downcast::<gtk::Window>()
+                    .is_some_and(|window| window.is_fullscreen());
+                bar.set_expand_tabs(!fullscreen);
+                place_session_toolbar(tabs, &bar, &owner, fullscreen);
+            }
+        }
+    };
+    tabs.connect_selected_page_notify(sync_toolbar.clone());
+    let sync_attached = sync_toolbar.clone();
+    tabs.connect_page_attached(move |tabs, _, _| {
+        let tabs = tabs.downgrade();
+        let sync = sync_attached.clone();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(tabs) = tabs.upgrade() {
+                sync(&tabs);
+            }
+        });
+    });
+    let tabs_for_fullscreen = tabs.downgrade();
     let fullscreen_header = header.downgrade();
     let fullscreen_sidebar = sidebar.downgrade();
     let sidebar_toggle = toggle.downgrade();
     window.connect_fullscreened_notify(move |window| {
         let fullscreen = window.is_fullscreen();
+        if let Some(tabs) = tabs_for_fullscreen.upgrade() {
+            sync_toolbar(&tabs);
+        }
         if let Some(header) = fullscreen_header.upgrade() {
             header.set_visible(!fullscreen);
         }
