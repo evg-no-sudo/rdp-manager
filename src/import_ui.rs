@@ -77,7 +77,7 @@ fn scan_and_preview(
     });
 }
 
-async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<Profile>)> {
+async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<(Profile, String)>)> {
     let mut entries = Vec::new();
     let mut visited = std::collections::HashSet::new();
     let mut count = 0;
@@ -206,7 +206,7 @@ pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
     });
 }
 
-async fn read_profile(file: &gio::File) -> Result<Profile> {
+async fn read_profile(file: &gio::File) -> Result<(Profile, String)> {
     let stream = file
         .read_future(glib::Priority::DEFAULT)
         .await
@@ -237,7 +237,7 @@ async fn read_profile(file: &gio::File) -> Result<Profile> {
 fn preview(
     parent: &adw::ApplicationWindow,
     state: Rc<State>,
-    entries: Vec<(String, Result<Profile>)>,
+    entries: Vec<(String, Result<(Profile, String)>)>,
 ) {
     let dialog = adw::Dialog::builder()
         .title("Импорт Remmina — просмотр")
@@ -262,11 +262,16 @@ fn preview(
         let row = adw::ActionRow::new();
         row.set_use_markup(false);
         match result {
-            Ok(profile) => {
+            Ok((profile, folder)) => {
                 row.set_title(&profile.name);
                 row.set_subtitle(&format!(
-                    "{} · порт {} · пользователь: {} · домен: {}\n{}",
-                    profile.host, profile.port, profile.username, profile.domain, filename
+                    "{} · порт {} · пользователь: {} · домен: {}\nПапка: {} · {}",
+                    profile.host,
+                    profile.port,
+                    profile.username,
+                    profile.domain,
+                    if folder.is_empty() { "—" } else { &folder },
+                    filename
                 ));
                 let check = gtk::CheckButton::builder()
                     .active(true)
@@ -274,7 +279,7 @@ fn preview(
                     .build();
                 row.add_prefix(&check);
                 row.set_activatable_widget(Some(&check));
-                candidates.push((check, profile));
+                candidates.push((check, (profile, folder)));
             }
             Err(error) => {
                 row.set_title(&filename);
@@ -317,7 +322,7 @@ fn preview(
             status.set_text("Отметьте хотя бы один профиль.");
             return;
         }
-        match state.store.import(&profiles) {
+        match state.store.import_with_folders(&profiles) {
             Ok(added) => {
                 profiles_ui::refresh(&state);
                 status.set_text(&format!("Добавлено: {added}. Дубликатов пропущено: {}.", profiles.len() - added));

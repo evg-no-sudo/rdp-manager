@@ -7,22 +7,123 @@ use adw::prelude::*;
 use std::{cell::Cell, rc::Rc};
 use zeroize::Zeroizing;
 
+fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let title = if folder.is_empty() {
+        "Без папки"
+    } else {
+        folder
+    };
+    let collapsed = state.collapsed_folders.borrow().contains(folder);
+    let toggle = gtk::Button::from_icon_name(if collapsed {
+        "pan-end-symbolic"
+    } else {
+        "pan-down-symbolic"
+    });
+    toggle.set_tooltip_text(Some(if collapsed {
+        "Развернуть папку"
+    } else {
+        "Свернуть папку"
+    }));
+    toggle.add_css_class("flat");
+    let toggle_state = state.clone();
+    let toggle_folder = folder.to_owned();
+    toggle.connect_clicked(move |_| {
+        let mut collapsed = toggle_state.collapsed_folders.borrow_mut();
+        if !collapsed.remove(&toggle_folder) {
+            collapsed.insert(toggle_folder.clone());
+        }
+        drop(collapsed);
+        refresh(&toggle_state);
+    });
+    heading.append(&toggle);
+    let title = gtk::Label::builder()
+        .label(title)
+        .hexpand(true)
+        .xalign(0.0)
+        .ellipsize(gtk::pango::EllipsizeMode::End)
+        .build();
+    title.add_css_class("heading");
+    heading.append(&title);
+    if !folder.is_empty() {
+        let rename = gtk::Button::from_icon_name("document-edit-symbolic");
+        rename.set_tooltip_text(Some("Переименовать папку"));
+        rename.add_css_class("flat");
+        let state = state.clone();
+        let folder = folder.to_owned();
+        rename.connect_clicked(move |button| {
+            let Some(window) = button.root().and_downcast::<gtk::Window>() else {
+                return;
+            };
+            rename_folder(&window, state.clone(), folder.clone());
+        });
+        heading.append(&rename);
+    }
+    gtk::ListBoxRow::builder()
+        .selectable(false)
+        .activatable(false)
+        .child(&heading)
+        .build()
+}
+
+fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
+    let dialog = adw::AlertDialog::builder()
+        .heading("Переименовать папку")
+        .build();
+    let entry = gtk::Entry::builder()
+        .text(&old)
+        .max_length(80)
+        .activates_default(true)
+        .build();
+    dialog.set_extra_child(Some(&entry));
+    dialog.add_responses(&[("cancel", "Отмена"), ("rename", "Переименовать")]);
+    dialog.set_close_response("cancel");
+    dialog.set_default_response(Some("rename"));
+    dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
+    let weak_window = window.downgrade();
+    dialog.connect_response(None, move |_, response| {
+        if response != "rename" {
+            return;
+        }
+        let value = entry.text();
+        let new = value.trim();
+        match state.store.rename_folder(&old, new) {
+            Ok(()) => {
+                let mut collapsed = state.collapsed_folders.borrow_mut();
+                if collapsed.remove(&old) {
+                    collapsed.insert(new.to_owned());
+                }
+                drop(collapsed);
+                refresh(&state);
+            }
+            Err(error) => {
+                if let Some(window) = weak_window.upgrade() {
+                    let alert = adw::AlertDialog::builder()
+                        .heading("Не удалось переименовать папку")
+                        .body(error.to_string())
+                        .build();
+                    alert.add_response("close", "Закрыть");
+                    alert.present(Some(&window));
+                }
+            }
+        }
+    });
+    dialog.present(Some(window));
+}
+
 pub fn refresh(state: &Rc<State>) {
     state
         .lists
         .borrow_mut()
-        .retain(|weak| weak.upgrade().is_some());
+        .retain(|view| view.list.upgrade().is_some());
     let folders = state.store.profile_folders().unwrap_or_default();
-    let profiles = state.store.profiles().map(|mut profiles| {
-        profiles.sort_by_key(|profile| folders.get(&profile.uid));
-        profiles
-    });
-    for list in state
-        .lists
-        .borrow()
-        .iter()
-        .filter_map(|weak| weak.upgrade())
-    {
+    let profiles = state.store.profiles();
+    let counts = state.store.connection_counts().unwrap_or_default();
+    for view in state.lists.borrow().iter() {
+        let Some(list) = view.list.upgrade() else {
+            continue;
+        };
+        let frequently = view.sort.upgrade().is_some_and(|sort| sort.selected() == 1);
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
@@ -36,7 +137,26 @@ pub fn refresh(state: &Rc<State>) {
                 list.append(&gtk::Label::new(Some("Нет сохранённых профилей")));
             }
             Ok(profiles) => {
+                let mut profiles: Vec<_> = profiles.iter().collect();
+                profiles.sort_by_cached_key(|profile| {
+                    let count = if frequently {
+                        counts.get(&profile.uid).copied().unwrap_or(0)
+                    } else {
+                        0
+                    };
+                    (
+                        folders.get(&profile.uid),
+                        std::cmp::Reverse(count),
+                        profile.name.to_lowercase(),
+                    )
+                });
+                let mut previous = None;
                 for profile in profiles {
+                    let folder = folders.get(&profile.uid).map(String::as_str).unwrap_or("");
+                    if previous != Some(folder) {
+                        list.append(&folder_header(state, folder));
+                        previous = Some(folder);
+                    }
                     let row = adw::ActionRow::builder()
                         .title(&profile.name)
                         .subtitle(format!("{} · порт {}", profile.host, profile.port))
@@ -175,10 +295,9 @@ fn edit_draft(
     let domain = entry("Домен (необязательно)", &profile.domain);
     let folders = state.store.profile_folders().unwrap_or_default();
     let folder_key = clone_source.as_deref().unwrap_or(&profile.uid);
-    let folder = entry(
-        "Папка (необязательно)",
-        folders.get(folder_key).map(String::as_str).unwrap_or(""),
-    );
+    let initial_folder = folders.get(folder_key).cloned().unwrap_or_default();
+    let folder = entry("Папка (необязательно)", &initial_folder);
+    let new_profile = profile.id.is_none();
     let known: std::collections::BTreeSet<_> = folders.values().map(String::as_str).collect();
     if !known.is_empty() {
         let choices = gtk::MenuButton::builder()
@@ -187,9 +306,24 @@ fn edit_draft(
             .valign(gtk::Align::Center)
             .build();
         let popover = gtk::Popover::new();
+        let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        content.set_width_request(310);
+        let search = gtk::SearchEntry::builder()
+            .placeholder_text("Найти папку")
+            .build();
+        content.append(&search);
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let mut filtered = Vec::new();
         for name in known {
-            let button = gtk::Button::with_label(name);
+            let title = gtk::Label::builder()
+                .label(name)
+                .wrap(true)
+                .wrap_mode(gtk::pango::WrapMode::WordChar)
+                .xalign(0.0)
+                .build();
+            let button = gtk::Button::builder().child(&title).build();
+            button.add_css_class("flat");
+            filtered.push((button.downgrade(), name.to_lowercase()));
             let folder = folder.downgrade();
             let popover = popover.downgrade();
             let name = name.to_owned();
@@ -204,11 +338,21 @@ fn edit_draft(
             items.append(&button);
         }
         let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
             .propagate_natural_height(true)
-            .max_content_height(240)
+            .max_content_height(360)
             .child(&items)
             .build();
-        popover.set_child(Some(&scroll));
+        content.append(&scroll);
+        search.connect_search_changed(move |search| {
+            let query = search.text().trim().to_lowercase();
+            for (button, name) in &filtered {
+                if let Some(button) = button.upgrade() {
+                    button.set_visible(name.contains(&query));
+                }
+            }
+        });
+        popover.set_child(Some(&content));
         choices.set_popover(Some(&popover));
         folder.add_suffix(&choices);
     }
@@ -376,6 +520,9 @@ fn edit_draft(
         let result = (|| {
             let port = port.text().trim().parse::<u16>()
                 .map_err(|_| "Порт должен быть от 1 до 65535.")?;
+            let folder_text = folder.text();
+            let selected_folder = folder_text.trim();
+            let folder_update = (new_profile || selected_folder != initial_folder).then_some(selected_folder);
             save_state.store.save_with_folder(&Profile {
                 id: save_id.get(),
                 uid: uid.clone(),
@@ -385,7 +532,7 @@ fn edit_draft(
                 username: username.text().trim().into(),
                 domain: domain.text().trim().into(),
             }, &SessionOptions { keyboard_layout:if keyboard_layout.selected()==0 {0x419}else{0x409},
-                quality:quality.selected(), resolution:resolution.selected(), shared_folder:shared_folder.text().trim().into() }, Some(folder.text().trim()))
+                quality:quality.selected(), resolution:resolution.selected(), shared_folder:shared_folder.text().trim().into() }, folder_update)
         })();
         let id = match result {
             Ok(id) => id,

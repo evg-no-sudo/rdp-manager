@@ -789,7 +789,13 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     let expected = expected_on_connect.clone();
                     offer_clipboard(&session_clipboard, sender, expected);
                     if let Some(id) = history {
-                        let _ = state.store.history_connected(id);
+                        if state.store.history_connected(id).is_ok()
+                            && state.lists.borrow().iter().any(|view| {
+                                view.sort.upgrade().is_some_and(|sort| sort.selected() == 1)
+                            })
+                        {
+                            crate::profiles_ui::refresh(&state);
+                        }
                     }
                 }
                 Event::Clipboard(text) => {

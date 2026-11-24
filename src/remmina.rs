@@ -3,7 +3,7 @@ use gtk::glib::{KeyFile, KeyFileFlags};
 use std::net::Ipv6Addr;
 
 /// Import connection identity only. Credentials and executable options are never read.
-pub fn parse(data: &str) -> Result<Profile> {
+pub fn parse(data: &str) -> Result<(Profile, String)> {
     let file = KeyFile::new();
     file.load_from_data(data.trim_start_matches('\u{feff}'), KeyFileFlags::NONE)
         .map_err(|_| "Некорректный формат файла Remmina.")?;
@@ -37,7 +37,7 @@ pub fn parse(data: &str) -> Result<Profile> {
         domain: field("domain")?,
     };
     profile.validate()?;
-    Ok(profile)
+    Ok((profile, field("group")?))
 }
 
 fn endpoint(server: &str) -> Result<(String, u16)> {
@@ -79,7 +79,8 @@ mod tests {
 
     #[test]
     fn imports_basic_fields_without_credentials_or_commands() {
-        let profile = parse("[remmina]\nprotocol=RDP\nname=Работа\nserver=host.test:3390\nusername=alice\ndomain=EXAMPLE\npassword=secret\nprecommand=touch /tmp/unwanted\n").unwrap();
+        let (profile, folder) = parse("[remmina]\nprotocol=RDP\nname=Работа\nserver=host.test:3390\nusername=alice\ndomain=EXAMPLE\ngroup=Рабочие\npassword=secret\nprecommand=touch /tmp/unwanted\n").unwrap();
+        assert_eq!(folder, "Рабочие");
         assert_eq!(
             profile,
             Profile {
@@ -102,7 +103,7 @@ mod tests {
             ("[::1]", "::1", 3389),
             ("2001:db8::1", "2001:db8::1", 3389),
         ] {
-            let p = parse(&format!("[remmina]\nprotocol=RDP\nserver={input}")).unwrap();
+            let (p, _) = parse(&format!("[remmina]\nprotocol=RDP\nserver={input}")).unwrap();
             assert_eq!(
                 (p.host.as_str(), p.port, p.name.as_str()),
                 (host, port, host)

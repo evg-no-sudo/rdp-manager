@@ -3,9 +3,15 @@ use adw::prelude::*;
 use std::{cell::RefCell, collections::HashSet, rc::Rc};
 type SessionStop = (gtk::glib::WeakRef<gtk::Widget>, Rc<dyn Fn()>);
 
+pub(crate) struct ProfileList {
+    pub(crate) list: gtk::glib::WeakRef<gtk::ListBox>,
+    pub(crate) sort: gtk::glib::WeakRef<gtk::DropDown>,
+}
+
 pub struct State {
     pub store: Store,
-    pub lists: RefCell<Vec<gtk::glib::WeakRef<gtk::ListBox>>>,
+    pub(crate) lists: RefCell<Vec<ProfileList>>,
+    pub(crate) collapsed_folders: RefCell<HashSet<String>>,
     operations: RefCell<HashSet<String>>,
     session_stops: RefCell<Vec<SessionStop>>,
     views: RefCell<
@@ -21,6 +27,7 @@ impl State {
         Rc::new(Self {
             store,
             lists: RefCell::new(Vec::new()),
+            collapsed_folders: RefCell::new(HashSet::new()),
             operations: RefCell::new(HashSet::new()),
             session_stops: RefCell::new(Vec::new()),
             views: RefCell::new(Vec::new()),
@@ -273,43 +280,24 @@ fn create_session_window(
     list.set_valign(gtk::Align::Start);
     list.set_vexpand(false);
     list.add_css_class("boxed-list");
-    list.set_header_func(|row, previous| {
-        if !row.is::<adw::ActionRow>() {
-            row.set_header(None::<&gtk::Widget>);
-            return;
-        }
-        let folder = row.widget_name();
-        if previous.is_some_and(|previous| previous.widget_name() == folder) {
-            row.set_header(None::<&gtk::Widget>);
-            return;
-        }
-        let title = if folder.is_empty() {
-            "Без папки"
-        } else {
-            folder.as_str()
-        };
-        let header = gtk::Label::builder()
-            .label(title)
-            .xalign(0.0)
-            .ellipsize(gtk::pango::EllipsizeMode::End)
-            .margin_start(12)
-            .margin_end(12)
-            .margin_top(8)
-            .margin_bottom(4)
-            .build();
-        header.add_css_class("heading");
-        row.set_header(Some(&header));
-    });
+    let sort = gtk::DropDown::from_strings(&["По алфавиту", "Часто используемые"]);
+    sort.set_tooltip_text(Some("Порядок подключений внутри папок"));
+    sidebar.append(&sort);
     let search_for_filter = search.downgrade();
+    let filter_state = state.clone();
     list.set_filter_func(move |row| {
-        let Some(search) = search_for_filter.upgrade() else {
-            return true;
-        };
-        let query = search.text().trim().to_lowercase();
+        let query = search_for_filter
+            .upgrade()
+            .map(|search| search.text().trim().to_lowercase())
+            .unwrap_or_default();
         if query.is_empty() {
-            return true;
+            return !row.is::<adw::ActionRow>()
+                || !filter_state
+                    .collapsed_folders
+                    .borrow()
+                    .contains(row.widget_name().as_str());
         }
-        row.downcast_ref::<adw::ActionRow>().is_some_and(|profile| {
+        let matches = |profile: &adw::ActionRow| {
             profile.widget_name().to_lowercase().contains(&query)
                 || profile.title().to_lowercase().contains(&query)
                 || profile
@@ -317,8 +305,24 @@ fn create_session_window(
                     .unwrap_or_default()
                     .to_lowercase()
                     .contains(&query)
-        })
+        };
+        if let Some(profile) = row.downcast_ref::<adw::ActionRow>() {
+            return matches(profile);
+        }
+        let mut next = row.next_sibling();
+        while let Some(widget) = next {
+            let Some(profile) = widget.downcast_ref::<adw::ActionRow>() else {
+                break;
+            };
+            if matches(profile) {
+                return true;
+            }
+            next = widget.next_sibling();
+        }
+        false
     });
+    let sort_state = state.clone();
+    sort.connect_selected_notify(move |_| crate::profiles_ui::refresh(&sort_state));
     let weak_list = list.downgrade();
     search.connect_search_changed(move |_| {
         if let Some(list) = weak_list.upgrade() {
@@ -331,7 +335,10 @@ fn create_session_window(
         .child(&list)
         .build();
     sidebar.append(&scroll);
-    state.lists.borrow_mut().push(list.downgrade());
+    state.lists.borrow_mut().push(ProfileList {
+        list: list.downgrade(),
+        sort: sort.downgrade(),
+    });
     crate::profiles_ui::refresh(&state);
     let weak_window = window.downgrade();
     let profile_state = state.clone();

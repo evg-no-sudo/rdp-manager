@@ -210,6 +210,33 @@ impl Store {
         options.validate()?;
         Ok(options)
     }
+    pub fn rename_folder(&self, old: &str, new: &str) -> Result<()> {
+        if new.is_empty() || new.chars().count() > 80 || new.chars().any(char::is_control) {
+            return Err("Введите название папки длиной до 80 символов.".into());
+        }
+        if old == new {
+            return Ok(());
+        }
+        let changed = self.0.execute(
+            "UPDATE profile_folders SET name=?1 WHERE name=?2
+             AND NOT EXISTS (SELECT 1 FROM profile_folders WHERE name=?1)",
+            params![new, old],
+        )?;
+        if changed == 0 {
+            return Err("Папка уже переименована или такое название занято.".into());
+        }
+        Ok(())
+    }
+
+    pub fn connection_counts(&self) -> Result<std::collections::HashMap<String, u64>> {
+        let mut query = self.0.prepare(
+            "SELECT profile_uid, COUNT(*) FROM session_history
+             WHERE connected=1 AND profile_uid IS NOT NULL GROUP BY profile_uid",
+        )?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     pub fn profile_folders(&self) -> Result<std::collections::HashMap<String, String>> {
         let mut query = self
             .0
@@ -370,13 +397,26 @@ impl Store {
     }
 
     /// Atomically add profiles, skipping exact identities already in the database/batch.
+    #[cfg(test)]
     pub fn import(&self, profiles: &[Profile]) -> Result<usize> {
-        for profile in profiles {
+        let profiles: Vec<_> = profiles
+            .iter()
+            .cloned()
+            .map(|p| (p, String::new()))
+            .collect();
+        self.import_with_folders(&profiles)
+    }
+
+    pub fn import_with_folders(&self, profiles: &[(Profile, String)]) -> Result<usize> {
+        for (profile, folder) in profiles {
             profile.validate()?;
+            if folder.chars().count() > 80 || folder.chars().any(char::is_control) {
+                return Err("Некорректное название группы Remmina (до 80 символов).".into());
+            }
         }
         let transaction = self.0.unchecked_transaction()?;
         let mut added = 0;
-        for p in profiles {
+        for (p, folder) in profiles {
             added += transaction.execute(
                 "INSERT INTO profiles(name,host,port,username,domain,uid)
                  SELECT ?1,?2,?3,?4,?5,?6 WHERE NOT EXISTS (
@@ -385,6 +425,14 @@ impl Store {
                  )",
                 params![p.name, p.host, p.port, p.username, p.domain, p.uid],
             )?;
+            if !folder.is_empty() {
+                transaction.execute(
+                    "INSERT OR IGNORE INTO profile_folders(profile_uid, name)
+                     SELECT uid, ?1 FROM profiles WHERE name=?2 AND host=?3 COLLATE NOCASE
+                         AND port=?4 AND username=?5 AND domain=?6",
+                    params![folder, p.name, p.host, p.port, p.username, p.domain],
+                )?;
+            }
         }
         transaction.commit()?;
         Ok(added)
@@ -462,6 +510,39 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remmina_folders_apply_to_existing_profiles_and_rename_together() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let store = Store::open(&directory.path().join("test.sqlite"))?;
+        let first = Profile {
+            name: "One".into(),
+            host: "host.test".into(),
+            ..Profile::default()
+        };
+        let second = Profile {
+            name: "Two".into(),
+            host: "host.test".into(),
+            ..Profile::default()
+        };
+        store.save(&first)?;
+        assert_eq!(
+            store.import_with_folders(&[
+                (first.clone(), "Work".into()),
+                (second.clone(), "Work".into())
+            ])?,
+            1
+        );
+        assert_eq!(
+            store.import_with_folders(&[(first.clone(), "Other".into())])?,
+            0
+        );
+        store.rename_folder("Work", "Office")?;
+        let folders = store.profile_folders()?;
+        assert_eq!(folders.get(&first.uid).map(String::as_str), Some("Office"));
+        assert_eq!(folders.get(&second.uid).map(String::as_str), Some("Office"));
+        Ok(())
+    }
 
     #[test]
     fn profile_folder_survives_reopen_and_can_be_cleared() -> Result<()> {
