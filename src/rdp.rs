@@ -26,6 +26,7 @@ type CertCallback = unsafe extern "C" fn(
     *const c_char,
     *const c_char,
 ) -> c_int;
+type ClipboardCallback = unsafe extern "C" fn(*mut c_void, *const c_char);
 extern "C" {
     fn rdp_manager_initialize() -> c_int;
     fn rdp_manager_build_config() -> *const c_char;
@@ -42,7 +43,9 @@ extern "C" {
         opaque: *mut c_void,
         frame: FrameCallback,
         certificate: CertCallback,
+        clipboard: ClipboardCallback,
     ) -> *mut Native;
+    fn rdp_manager_clipboard_set_text(native: *mut Native, text: *const c_char) -> c_int;
     fn rdp_manager_connect(native: *mut Native) -> c_int;
     fn rdp_manager_poll(native: *mut Native) -> c_int;
     fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
@@ -122,6 +125,7 @@ pub enum CertificateDecision {
 
 pub enum Event {
     Connected,
+    Clipboard(String),
     Certificate(Certificate, mpsc::Sender<CertificateDecision>),
     Ended {
         code: u32,
@@ -175,6 +179,7 @@ pub struct Control {
     motion: Mutex<Option<Input>>,
     frame: Mutex<Option<Frame>>,
     resize: Mutex<Option<(u16, u16)>>,
+    clipboard: Mutex<Option<String>>,
 }
 impl Control {
     fn wake_input(&self) {
@@ -247,6 +252,15 @@ impl Control {
         }
         self.wake_input();
     }
+    pub fn clipboard_text(&self, text: String) {
+        if text.len() > 1024 * 1024 || self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut pending) = self.clipboard.lock() {
+            *pending = Some(text);
+        }
+        self.wake_input();
+    }
     pub fn take_frame(&self) -> Option<Frame> {
         self.frame.lock().ok()?.take()
     }
@@ -255,6 +269,18 @@ impl Control {
 struct Callbacks {
     control: Arc<Control>,
     events: mpsc::Sender<Event>,
+}
+unsafe extern "C" fn clipboard_callback(opaque: *mut c_void, text: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        if opaque.is_null() || text.is_null() {
+            return;
+        }
+        let callbacks = unsafe { &*(opaque as *const Callbacks) };
+        let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
+        if text.len() <= 1024 * 1024 {
+            let _ = callbacks.events.send(Event::Clipboard(text.into_owned()));
+        }
+    });
 }
 fn frame_size(width: u32, height: u32, stride: u32) -> Option<usize> {
     if width == 0
@@ -394,6 +420,7 @@ pub fn start(config: Config) -> Result<(Arc<Control>, Receiver<Event>), String> 
         motion: Mutex::new(None),
         frame: Mutex::new(None),
         resize: Mutex::new(None),
+        clipboard: Mutex::new(None),
     });
     let worker = control.clone();
     std::thread::Builder::new()
@@ -476,6 +503,7 @@ fn run(
             callbacks as *mut _ as *mut c_void,
             frame_callback,
             certificate_callback,
+            clipboard_callback,
         )
     };
     let mut temporary = pass.into_bytes_with_nul();
@@ -549,6 +577,18 @@ fn run(
                     rdp_manager_input(native, 6, 0, w, h);
                 }
             }
+            if let Some(text) = control
+                .clipboard
+                .lock()
+                .ok()
+                .and_then(|mut pending| pending.take())
+            {
+                if let Ok(text) = CString::new(text) {
+                    unsafe {
+                        rdp_manager_clipboard_set_text(native, text.as_ptr());
+                    }
+                }
+            }
             if unsafe { rdp_manager_poll(native) } <= 0 {
                 break;
             }
@@ -612,6 +652,7 @@ mod tests {
             motion: Mutex::new(None),
             frame: Mutex::new(None),
             resize: Mutex::new(None),
+            clipboard: Mutex::new(None),
         });
         let mut callbacks = Callbacks {
             control: control.clone(),
@@ -700,6 +741,7 @@ mod tests {
                     reply.send(CertificateDecision::Reject).unwrap();
                 }
                 Event::Connected => panic!("Rejected certificate connected"),
+                Event::Clipboard(_) => {}
                 Event::Ended { .. } => break,
             }
         }
@@ -714,6 +756,7 @@ mod tests {
                     reply.send(CertificateDecision::Session).unwrap();
                 }
                 Event::Connected => panic!("Wrong NLA password connected"),
+                Event::Clipboard(_) => {}
                 Event::Ended { code, .. } => {
                     assert_ne!(code, 0);
                     break;
@@ -745,6 +788,7 @@ mod tests {
                     control.send(Input::mouse(0x9000, 10, 12));
                     control.send(Input::mouse(0x1000, 10, 12));
                 }
+                Ok(Event::Clipboard(_)) => {}
                 Ok(Event::Ended { message, .. }) => panic!("Unexpected disconnect: {message}"),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => break,
@@ -823,6 +867,7 @@ mod tests {
             }
             Event::Ended { message, .. } => panic!("No prompt: {message}"),
             Event::Connected => panic!("Certificate was persisted unexpectedly"),
+            Event::Clipboard(_) => panic!("Unexpected clipboard event before connection"),
         }
         loop {
             if matches!(
@@ -856,6 +901,7 @@ mod tests {
                         connected = true;
                         control.stop();
                     }
+                    Event::Clipboard(_) => {}
                     Event::Ended { .. } => break,
                 }
             }
@@ -879,6 +925,7 @@ mod tests {
                     Event::Certificate(_, _) => panic!("Saved certificate was not reused"),
                     Event::Ended { message, .. } => panic!("EGFX ended early: {message}"),
                     Event::Connected => {}
+                    Event::Clipboard(_) => {}
                 }
             }
             if let Some(frame) = control.take_frame() {

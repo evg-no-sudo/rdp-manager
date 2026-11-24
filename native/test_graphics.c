@@ -1,7 +1,7 @@
 /* In-process test of the real FreeRDP EGFX/GDI callbacks. Loopback handshake for real GDI/cache setup; no screen capture. */
 #include "rdp_bridge.c"
 #include <assert.h>
-typedef struct { unsigned count; BYTE expected; int busy; } Probe;
+typedef struct { unsigned count; BYTE expected; int busy; char clipboard[128]; unsigned formats; } Probe;
 static int capture(void* opaque,const uint8_t* data,uint32_t w,uint32_t h,uint32_t stride){
     Probe* p=opaque;
     if(p->busy)return 2;
@@ -12,6 +12,12 @@ static int capture(void* opaque,const uint8_t* data,uint32_t w,uint32_t h,uint32
 static int cert(void* a,int b,const char* c,uint16_t d,const char* e,const char* f,const char* g,const char* h,const char* i){
     (void)a;(void)b;(void)c;(void)d;(void)e;(void)f;(void)g;(void)h;(void)i;return 1;
 }
+static void clipboard(void* opaque,const char* text){Probe* p=opaque;snprintf(p->clipboard,sizeof(p->clipboard),"%s",text);}
+static UINT clip_caps(CliprdrClientContext* ctx,const CLIPRDR_CAPABILITIES* caps){(void)ctx;assert(caps->cCapabilitiesSets==1);return CHANNEL_RC_OK;}
+static UINT clip_list(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_LIST* list){Probe* p=((RdpBridge*)ctx->custom)->opaque;p->formats=list->numFormats;return CHANNEL_RC_OK;}
+static UINT clip_list_reply(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_LIST_RESPONSE* response){(void)ctx;assert(response->common.msgFlags==CB_RESPONSE_OK);return CHANNEL_RC_OK;}
+static UINT clip_data_request(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_DATA_REQUEST* request){(void)ctx;assert(request->requestedFormatId==CF_UNICODETEXT);return CHANNEL_RC_OK;}
+static UINT clip_data_reply(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_DATA_RESPONSE* response){(void)ctx;assert(response->common.msgFlags==CB_RESPONSE_OK);assert(response->common.dataLen==14);assert(((WCHAR*)response->requestedFormatData)[0]==0x41f);return CHANNEL_RC_OK;}
 static void fill(RdpgfxClientContext* gfx,UINT16 top,UINT16 bottom,BYTE value){
     RECTANGLE_16 rect={0,top,640,bottom};
     RDPGFX_SOLID_FILL_PDU cmd={.surfaceId=1,.fillRectCount=1,.fillRects=&rect};
@@ -28,17 +34,32 @@ int main(int argc,char** argv){
     assert(argc==2);
     assert(rdp_manager_initialize());
     Probe probe={.expected=0x11};
-    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,3,&probe,capture,cert);
+    RdpBridge* bridge=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,3,&probe,capture,cert,clipboard);
     assert(bridge&&rdp_manager_connect(bridge));
-    RdpBridge* compatibility=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,2,&probe,capture,cert);
+    RdpBridge* compatibility=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,2,&probe,capture,cert,clipboard);
     assert(compatibility);
     assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_SoftwareGdi));
     if(strstr(freerdp_get_build_config(),"WITH_GFX_H264=ON"))assert(freerdp_settings_get_bool(compatibility->instance->context->settings,FreeRDP_GfxH264));
     rdp_manager_free(compatibility);
-    RdpBridge* avc444=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,4,&probe,capture,cert);
+    RdpBridge* avc444=rdp_manager_new("127.0.0.1",(uint16_t)atoi(argv[1]),"fixture","fixture-password","",640,480,0x419,4,&probe,capture,cert,clipboard);
     assert(avc444);
     assert(freerdp_settings_get_uint32(avc444->instance->context->settings,FreeRDP_GfxCapsFilter)==(1u<<1));
     assert(freerdp_settings_get_bool(avc444->instance->context->settings,FreeRDP_SupportGraphicsPipeline));
+    CliprdrClientContext clip={.custom=avc444,.ClientCapabilities=clip_caps,.ClientFormatList=clip_list,
+        .ClientFormatListResponse=clip_list_reply,.ClientFormatDataRequest=clip_data_request,.ClientFormatDataResponse=clip_data_reply};
+    avc444->clipboard=&clip;
+    CLIPRDR_MONITOR_READY monitor={0};
+    assert(clipboard_ready(&clip,&monitor)==CHANNEL_RC_OK&&probe.formats==0);
+    assert(rdp_manager_clipboard_set_text(avc444,"Привет")&&probe.formats==1);
+    CLIPRDR_FORMAT_DATA_REQUEST request={.requestedFormatId=CF_UNICODETEXT};
+    assert(clipboard_server_request(&clip,&request)==CHANNEL_RC_OK);
+    CLIPRDR_FORMAT format={.formatId=CF_UNICODETEXT};
+    CLIPRDR_FORMAT_LIST list={.numFormats=1,.formats=&format};
+    assert(clipboard_server_list(&clip,&list)==CHANNEL_RC_OK);
+    WCHAR remote[]={0x41f,0x440,0x438,0x432,0x435,0x442,0};
+    CLIPRDR_FORMAT_DATA_RESPONSE reply={.common={.msgFlags=CB_RESPONSE_OK,.dataLen=sizeof(remote)},.requestedFormatData=(BYTE*)remote};
+    assert(clipboard_server_data(&clip,&reply)==CHANNEL_RC_OK&&strcmp(probe.clipboard,"Привет")==0);
+    avc444->clipboard=NULL;
     rdp_manager_free(avc444);
     rdp_manager_prepare_input(bridge);
     assert(WaitForSingleObject(bridge->input_event,0)==WAIT_TIMEOUT);

@@ -237,6 +237,34 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         &capture,
         &text_mode,
     );
+    let clipboard = picture.display().clipboard();
+    let expected_remote_text = Rc::new(RefCell::new(None::<String>));
+    let weak_sender = std::sync::Arc::downgrade(&control);
+    let expected_on_change = expected_remote_text.clone();
+    let clipboard_handler = clipboard.connect_changed(move |clipboard| {
+        let weak_sender = weak_sender.clone();
+        let expected = expected_on_change.clone();
+        clipboard.read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
+            let Ok(Some(text)) = result else {
+                return;
+            };
+            let text = text.to_string();
+            if expected.borrow().as_ref() == Some(&text) {
+                return;
+            }
+            expected.borrow_mut().take();
+            if let Some(sender) = weak_sender.upgrade() {
+                sender.clipboard_text(text);
+            }
+        });
+    });
+    let clipboard_on_close = clipboard.clone();
+    let clipboard_handler = RefCell::new(Some(clipboard_handler));
+    root.connect_destroy(move |_| {
+        if let Some(handler) = clipboard_handler.borrow_mut().take() {
+            clipboard_on_close.disconnect(handler);
+        }
+    });
     options_box.append(&gtk::Label::new(Some("Переключить раскладку на сервере")));
     for (label, codes) in [
         ("Alt+Shift", vec![56, 42]),
@@ -304,6 +332,9 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_cad = cad.downgrade();
     let weak_capture = capture.downgrade();
     let weak_page = page.downgrade();
+    let session_clipboard = clipboard.clone();
+    let clipboard_sender = std::sync::Arc::downgrade(&control);
+    let expected_on_connect = expected_remote_text.clone();
     let changed_certificate = Cell::new(false);
     let frame_control = control.clone();
     let trace_graphics = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
@@ -379,9 +410,25 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     picture.grab_focus();
                     capture.set_sensitive(true);
                     capture.set_active(true);
+                    let sender = clipboard_sender.clone();
+                    let expected = expected_on_connect.clone();
+                    session_clipboard.read_text_async(
+                        None::<&gtk::gio::Cancellable>,
+                        move |result| {
+                            if let (Some(sender), Ok(Some(text))) = (sender.upgrade(), result) {
+                                if expected.borrow().as_deref() != Some(text.as_str()) {
+                                    sender.clipboard_text(text.to_string());
+                                }
+                            }
+                        },
+                    );
                     if let Some(id) = history {
                         let _ = state.store.history_connected(id);
                     }
+                }
+                Event::Clipboard(text) => {
+                    expected_remote_text.replace(Some(text.clone()));
+                    session_clipboard.set_text(&text);
                 }
                 Event::Certificate(cert, reply) => {
                     if cert.changed {

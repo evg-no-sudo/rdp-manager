@@ -7,6 +7,7 @@
 #include <freerdp/gdi/gfx.h>
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/client/disp.h>
+#include <freerdp/client/cliprdr.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/event.h>
@@ -16,6 +17,8 @@
 #include <winpr/synch.h>
 #include <winpr/sysinfo.h>
 #include <winpr/ssl.h>
+#include <winpr/user.h>
+#include <winpr/string.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -28,6 +31,11 @@ struct RdpBridge {
     void* opaque;
     RdpFrame frame;
     RdpCertificate certificate;
+    RdpClipboard clipboard_callback;
+    CliprdrClientContext* clipboard;
+    BOOL clipboard_ready;
+    char* clipboard_text;
+    CRITICAL_SECTION clipboard_lock;
     atomic_int cancelled;
     atomic_int connected;
     atomic_int frame_dirty;
@@ -121,8 +129,99 @@ static void send_desktop_size(RdpBridge* bridge) {
     }
     LeaveCriticalSection(&bridge->graphics_lock);
 }
+static UINT clipboard_advertise(RdpBridge* bridge) {
+    if (!bridge->clipboard || !bridge->clipboard_ready) return CHANNEL_RC_OK;
+    CLIPRDR_FORMAT format = { .formatId = CF_UNICODETEXT };
+    CLIPRDR_FORMAT_LIST list = { .common = { .msgType = CB_FORMAT_LIST },
+                                 .numFormats = bridge->clipboard_text ? 1 : 0,
+                                 .formats = bridge->clipboard_text ? &format : NULL };
+    return bridge->clipboard->ClientFormatList(bridge->clipboard, &list);
+}
+static UINT clipboard_ready(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready) {
+    (void)ready;
+    RdpBridge* bridge = context->custom;
+    CLIPRDR_GENERAL_CAPABILITY_SET general = {
+        .capabilitySetType = CB_CAPSTYPE_GENERAL,
+        .capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN,
+        .version = CB_CAPS_VERSION_2,
+        .generalFlags = CB_USE_LONG_FORMAT_NAMES
+    };
+    CLIPRDR_CAPABILITIES caps = { .common = { .msgType = CB_CLIP_CAPS },
+        .cCapabilitiesSets = 1, .capabilitySets = (CLIPRDR_CAPABILITY_SET*)&general };
+    UINT result = context->ClientCapabilities(context, &caps);
+    if (result == CHANNEL_RC_OK) bridge->clipboard_ready = TRUE;
+    return result == CHANNEL_RC_OK ? clipboard_advertise(bridge) : result;
+}
+static UINT clipboard_server_list(CliprdrClientContext* context, const CLIPRDR_FORMAT_LIST* list) {
+    CLIPRDR_FORMAT_LIST_RESPONSE response = { .common = {
+        .msgType = CB_FORMAT_LIST_RESPONSE, .msgFlags = CB_RESPONSE_OK } };
+    UINT result = context->ClientFormatListResponse(context, &response);
+    if (result != CHANNEL_RC_OK) return result;
+    for (UINT32 i = 0; i < list->numFormats; i++) {
+        if (list->formats[i].formatId == CF_UNICODETEXT) {
+            CLIPRDR_FORMAT_DATA_REQUEST request = { .common = { .msgType = CB_FORMAT_DATA_REQUEST },
+                .requestedFormatId = CF_UNICODETEXT };
+            return context->ClientFormatDataRequest(context, &request);
+        }
+    }
+    return CHANNEL_RC_OK;
+}
+static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
+    RdpBridge* bridge = context->custom;
+    if (!(response->common.msgFlags & CB_RESPONSE_OK) || !response->requestedFormatData ||
+        response->common.dataLen < 2 || response->common.dataLen > 2 * 1024 * 1024 ||
+        response->common.dataLen % 2) return CHANNEL_RC_OK;
+    size_t count = response->common.dataLen / 2;
+    WCHAR* wide = calloc(count + 1, sizeof(WCHAR));
+    if (!wide) return CHANNEL_RC_NO_MEMORY;
+    memcpy(wide, response->requestedFormatData, response->common.dataLen);
+    char* utf8 = ConvertWCharToUtf8Alloc(wide, NULL);
+    free(wide);
+    if (utf8) { bridge->clipboard_callback(bridge->opaque, utf8); free(utf8); }
+    return CHANNEL_RC_OK;
+}
+static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_REQUEST* request) {
+    RdpBridge* bridge = context->custom;
+    CLIPRDR_FORMAT_DATA_RESPONSE response = { .common = { .msgType = CB_FORMAT_DATA_RESPONSE } };
+    WCHAR* wide = NULL;
+    size_t chars = 0;
+    EnterCriticalSection(&bridge->clipboard_lock);
+    if (request->requestedFormatId == CF_UNICODETEXT && bridge->clipboard_text)
+        wide = ConvertUtf8ToWCharAlloc(bridge->clipboard_text, &chars);
+    LeaveCriticalSection(&bridge->clipboard_lock);
+    if (wide && chars < 1024 * 1024) {
+        response.common.msgFlags = CB_RESPONSE_OK;
+        response.common.dataLen = (UINT32)((chars + 1) * sizeof(WCHAR));
+        response.requestedFormatData = (const BYTE*)wide;
+    } else response.common.msgFlags = CB_RESPONSE_FAIL;
+    UINT result = context->ClientFormatDataResponse(context, &response);
+    free(wide);
+    return result;
+}
+int rdp_manager_clipboard_set_text(RdpBridge* bridge, const char* text) {
+    if (!bridge || !text || strlen(text) > 1024 * 1024) return 0;
+    char* copy = strdup(text);
+    if (!copy) return 0;
+    EnterCriticalSection(&bridge->clipboard_lock);
+    if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text)); free(bridge->clipboard_text); }
+    bridge->clipboard_text = copy;
+    LeaveCriticalSection(&bridge->clipboard_lock);
+    return clipboard_advertise(bridge) == CHANNEL_RC_OK;
+}
 static void channel_connected(void* context, const ChannelConnectedEventArgs* event) {
     rdpContext* ctx = context;
+    if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        RdpBridge* bridge = bridge_of(ctx);
+        CliprdrClientContext* clip = event->pInterface;
+        bridge->clipboard = clip;
+        bridge->clipboard_ready = FALSE;
+        clip->custom = bridge;
+        clip->MonitorReady = clipboard_ready;
+        clip->ServerFormatList = clipboard_server_list;
+        clip->ServerFormatDataRequest = clipboard_server_request;
+        clip->ServerFormatDataResponse = clipboard_server_data;
+        return;
+    }
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) {
         RdpBridge* bridge = bridge_of(ctx);
         EnterCriticalSection(&bridge->graphics_lock);
@@ -155,6 +254,7 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
 static void channel_disconnected(void* context, const ChannelDisconnectedEventArgs* event) {
     rdpContext* ctx = context;
     RdpBridge* bridge = bridge_of(ctx);
+    if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) { bridge->clipboard = NULL; bridge->clipboard_ready = FALSE; }
     EnterCriticalSection(&bridge->graphics_lock);
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) { bridge->disp = NULL; bridge->disp_ready = FALSE; }
     if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0 && bridge->gfx) {
@@ -324,9 +424,9 @@ static DWORD verify_changed_certificate(freerdp* instance, const char* host, UIN
 
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     const char* password, const char* domain, uint32_t width, uint32_t height,
-    uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate) {
+    uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate, RdpClipboard clipboard) {
     if (!host || !user || !password || !domain || !frame || !certificate || !port ||
-        !width || !height || width > 8192 || height > 8192 || (uint64_t)width * height > 16777216) return NULL;
+        !clipboard || !width || !height || width > 8192 || height > 8192 || (uint64_t)width * height > 16777216) return NULL;
     RdpBridge* bridge = calloc(1, sizeof(*bridge));
     if (!bridge) return NULL;
     atomic_init(&bridge->cancelled, 0);
@@ -337,12 +437,13 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     atomic_init(&bridge->input_scans, 0);
     atomic_init(&bridge->input_unicode, 0);
     InitializeCriticalSection(&bridge->graphics_lock);
-    bridge->opaque = opaque; bridge->frame = frame; bridge->certificate = certificate;
+    InitializeCriticalSection(&bridge->clipboard_lock);
+    bridge->opaque = opaque; bridge->frame = frame; bridge->certificate = certificate; bridge->clipboard_callback = clipboard;
     bridge->instance = freerdp_new();
-    if (!bridge->instance) { DeleteCriticalSection(&bridge->graphics_lock); free(bridge); return NULL; }
+    if (!bridge->instance) { DeleteCriticalSection(&bridge->clipboard_lock); DeleteCriticalSection(&bridge->graphics_lock); free(bridge); return NULL; }
     freerdp* instance = bridge->instance;
     instance->ContextSize = sizeof(BridgeContext);
-    if (!freerdp_context_new(instance)) { freerdp_free(instance); DeleteCriticalSection(&bridge->graphics_lock); free(bridge); return NULL; }
+    if (!freerdp_context_new(instance)) { freerdp_free(instance); DeleteCriticalSection(&bridge->clipboard_lock); DeleteCriticalSection(&bridge->graphics_lock); free(bridge); return NULL; }
     ((BridgeContext*)instance->context)->bridge = bridge;
     instance->PostConnect = post_connect;
     instance->PreConnect = pre_connect;
@@ -405,7 +506,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
         SET_BOOL(FreeRDP_JpegCodec, FALSE);
         SET_UINT(FreeRDP_BitmapCacheV3CodecId, 0);
     }
-    SET_BOOL(FreeRDP_RedirectClipboard, FALSE);
+    SET_BOOL(FreeRDP_RedirectClipboard, TRUE);
     SET_BOOL(FreeRDP_DynamicResolutionUpdate, TRUE);
     SET_BOOL(FreeRDP_DesktopResize, TRUE);
     SET_BOOL(FreeRDP_AsyncUpdate, FALSE);
@@ -533,6 +634,8 @@ void rdp_manager_free(RdpBridge* bridge) {
         freerdp_free(bridge->instance);
     }
     if (bridge->input_event) CloseHandle(bridge->input_event);
+    if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text)); free(bridge->clipboard_text); }
+    DeleteCriticalSection(&bridge->clipboard_lock);
     DeleteCriticalSection(&bridge->graphics_lock);
     free(bridge);
 }
