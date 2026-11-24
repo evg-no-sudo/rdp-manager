@@ -38,11 +38,15 @@ fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
             .iter()
             .any(|mime| formats.contain_mime_type(mime))
 }
+const REMOTE_FILES_MIME: &str = "application/x-rdp-manager-remote-files";
 fn offer_clipboard(
     clipboard: &gdk::Clipboard,
     sender: std::sync::Weak<rdp::Control>,
     expected: Rc<RefCell<Option<String>>>,
 ) {
+    if clipboard.formats().contain_mime_type(REMOTE_FILES_MIME) {
+        return;
+    }
     if clipboard
         .formats()
         .contains_type(gdk::FileList::static_type())
@@ -446,6 +450,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_cad = cad.downgrade();
     let weak_capture = capture.downgrade();
     let weak_page = page.downgrade();
+    let mut remote_file_provider = None::<gdk::ContentProvider>;
     let session_clipboard = clipboard.clone();
     let clipboard_sender = std::sync::Arc::downgrade(&control);
     let expected_on_connect = expected_remote_text.clone();
@@ -534,6 +539,33 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                 Event::Clipboard(text) => {
                     expected_remote_text.replace(Some(text.clone()));
                     session_clipboard.set_text(&text);
+                }
+                Event::ClipboardFiles(uris) => {
+                    let files: Vec<_> = uris
+                        .lines()
+                        .filter(|line| line.starts_with("file://"))
+                        .map(gtk::gio::File::for_uri)
+                        .collect();
+                    if files.is_empty() {
+                        if remote_file_provider.take().is_some_and(|provider| {
+                            session_clipboard.content().as_ref() == Some(&provider)
+                        }) {
+                            let _ = session_clipboard.set_content(None::<&gdk::ContentProvider>);
+                        }
+                    } else {
+                        let provider = gdk::ContentProvider::new_union(&[
+                            gdk::ContentProvider::for_value(
+                                &gdk::FileList::from_array(&files).to_value(),
+                            ),
+                            gdk::ContentProvider::for_bytes(
+                                REMOTE_FILES_MIME,
+                                &glib::Bytes::from_static(b""),
+                            ),
+                        ]);
+                        if session_clipboard.set_content(Some(&provider)).is_ok() {
+                            remote_file_provider = Some(provider);
+                        }
+                    }
                 }
                 Event::Certificate(cert, reply) => {
                     if cert.changed {

@@ -8,6 +8,7 @@
 #include <freerdp/client/rdpgfx.h>
 #include <freerdp/client/disp.h>
 #include <freerdp/client/cliprdr.h>
+#include <freerdp/client/client_cliprdr_file.h>
 #include <freerdp/client/channels.h>
 #include <freerdp/client/cmdline.h>
 #include <freerdp/event.h>
@@ -29,6 +30,9 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* FreeRDP 3.32 uses a single FUSE mount path per process. */
+static atomic_bool clipboard_mount_in_use;
+
 struct RdpBridge {
     freerdp* instance;
     HANDLE input_event;
@@ -39,6 +43,11 @@ struct RdpBridge {
     RdpClipboard clipboard_callback;
     CliprdrClientContext* clipboard;
     BOOL clipboard_ready;
+    CliprdrFileContext* remote_files;
+    wClipboard* remote_clipboard;
+    RdpClipboard files_callback;
+    UINT32 requested_format, offered_format;
+    BOOL requested_files, offered_files, request_superseded;
     char* clipboard_text;
     RdpClipboardFile* clipboard_files;
     UINT32 clipboard_file_count;
@@ -136,6 +145,36 @@ static void send_desktop_size(RdpBridge* bridge) {
     }
     LeaveCriticalSection(&bridge->graphics_lock);
 }
+void rdp_manager_clipboard_receive_files(RdpBridge* bridge, RdpClipboard callback) {
+    bridge->files_callback = callback;
+}
+static UINT clipboard_capabilities(CliprdrClientContext* context, const CLIPRDR_CAPABILITIES* caps) {
+    RdpBridge* bridge = bridge_of(context->rdpcontext);
+    if (!bridge->remote_files || !caps->cCapabilitiesSets || !caps->capabilitySets)
+        return CHANNEL_RC_OK;
+    const CLIPRDR_CAPABILITY_SET* set = caps->capabilitySets;
+    if (set->capabilitySetType == CB_CAPSTYPE_GENERAL &&
+        set->capabilitySetLength >= CB_CAPSTYPE_GENERAL_LEN) {
+        const CLIPRDR_GENERAL_CAPABILITY_SET* general = (const void*)set;
+        if (!cliprdr_file_context_remote_set_flags(bridge->remote_files, general->generalFlags))
+            return ERROR_INTERNAL_ERROR;
+    }
+    return CHANNEL_RC_OK;
+}
+static RdpBridge* clipboard_bridge(CliprdrClientContext* context) {
+    return context->rdpcontext ? bridge_of(context->rdpcontext) : context->custom;
+}
+static UINT clipboard_request_offer(CliprdrClientContext* context) {
+    RdpBridge* bridge = clipboard_bridge(context);
+    if (bridge->requested_format || !bridge->offered_format) return CHANNEL_RC_OK;
+    bridge->requested_format = bridge->offered_format;
+    bridge->requested_files = bridge->offered_files;
+    bridge->request_superseded = FALSE;
+    bridge->offered_format = 0;
+    CLIPRDR_FORMAT_DATA_REQUEST request = { .common.msgType = CB_FORMAT_DATA_REQUEST,
+        .requestedFormatId = bridge->requested_format };
+    return context->ClientFormatDataRequest(context, &request);
+}
 static UINT clipboard_advertise(RdpBridge* bridge) {
     if (!bridge->clipboard || !bridge->clipboard_ready) return CHANNEL_RC_OK;
     CLIPRDR_FORMAT format = bridge->clipboard_files
@@ -148,7 +187,7 @@ static UINT clipboard_advertise(RdpBridge* bridge) {
 }
 static UINT clipboard_ready(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready) {
     (void)ready;
-    RdpBridge* bridge = context->custom;
+    RdpBridge* bridge = clipboard_bridge(context);
     CLIPRDR_GENERAL_CAPABILITY_SET general = {
         .capabilitySetType = CB_CAPSTYPE_GENERAL,
         .capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN,
@@ -167,31 +206,96 @@ static UINT clipboard_server_list(CliprdrClientContext* context, const CLIPRDR_F
         .msgType = CB_FORMAT_LIST_RESPONSE, .msgFlags = CB_RESPONSE_OK } };
     UINT result = context->ClientFormatListResponse(context, &response);
     if (result != CHANNEL_RC_OK) return result;
+    RdpBridge* bridge = clipboard_bridge(context);
+    bridge->offered_format = 0;
+    bridge->offered_files = FALSE;
+    bridge->request_superseded = bridge->requested_format != 0;
+    if (bridge->remote_files) {
+        bridge->files_callback(bridge->opaque, "");
+        result = cliprdr_file_context_notify_new_server_format_list(bridge->remote_files);
+        if (result != CHANNEL_RC_OK) return result;
+    }
     for (UINT32 i = 0; i < list->numFormats; i++) {
-        if (list->formats[i].formatId == CF_UNICODETEXT) {
-            CLIPRDR_FORMAT_DATA_REQUEST request = { .common = { .msgType = CB_FORMAT_DATA_REQUEST },
-                .requestedFormatId = CF_UNICODETEXT };
-            return context->ClientFormatDataRequest(context, &request);
+        const CLIPRDR_FORMAT* format = &list->formats[i];
+        if (bridge->remote_files && format->formatId && format->formatName &&
+            strcmp(format->formatName, "FileGroupDescriptorW") == 0) {
+            bridge->offered_format = format->formatId;
+            bridge->offered_files = TRUE;
+            break;
         }
+        if (format->formatId == CF_UNICODETEXT) bridge->offered_format = CF_UNICODETEXT;
+    }
+    return clipboard_request_offer(context);
+}
+static BOOL clipboard_valid_file_list(const BYTE* data, UINT32 size) {
+    if (size < 4 || size > 4 + 4096 * sizeof(FILEDESCRIPTORW)) return FALSE;
+    FILEDESCRIPTORW* files = NULL;
+    UINT32 count = 0;
+    if (cliprdr_parse_file_list(data, size, &files, &count) != CHANNEL_RC_OK) {
+        free(files);
+        return FALSE;
+    }
+    BOOL valid = count > 0;
+    for (UINT32 i = 0; valid && i < count; i++) {
+        const WCHAR* name = files[i].cFileName;
+        if (!name[0] || name[0] == '\\') valid = FALSE;
+        size_t j = 0, start = 0;
+        for (; j < ARRAYSIZE(files[i].cFileName) && name[j]; j++) {
+            if (name[j] == '\\') {
+                if (j == start || (name[start] == '.' &&
+                    (j == start + 1 || (j == start + 2 && name[start + 1] == '.'))))
+                    valid = FALSE;
+                start = j + 1;
+            }
+            if (name[j] < 32 || name[j] == '/' || name[j] == ':') {
+                valid = FALSE;
+                break;
+            }
+        }
+        if (j == ARRAYSIZE(files[i].cFileName) || j == start ||
+            (name[start] == '.' && (j == start + 1 ||
+                (j == start + 2 && name[start + 1] == '.')))) valid = FALSE;
+    }
+    free(files);
+    return valid;
+}
+static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
+    RdpBridge* bridge = clipboard_bridge(context);
+    UINT32 format = bridge->requested_format;
+    bridge->requested_format = 0;
+    if (!format || bridge->request_superseded || !(response->common.msgFlags & CB_RESPONSE_OK) ||
+        !response->requestedFormatData)
+        return clipboard_request_offer(context);
+    UINT32 size = response->common.dataLen;
+    if (bridge->requested_files && clipboard_valid_file_list(response->requestedFormatData, size)) {
+        wClipboard* clipboard = bridge->remote_clipboard;
+        UINT32 source = ClipboardRegisterFormat(clipboard, "FileGroupDescriptorW");
+        UINT32 target = ClipboardRegisterFormat(clipboard, "text/uri-list");
+        if (source && target &&
+            cliprdr_file_context_update_server_data(bridge->remote_files, clipboard,
+                response->requestedFormatData, size) &&
+            ClipboardSetData(clipboard, source, response->requestedFormatData, size)) {
+            UINT32 length = 0;
+            char* uris = ClipboardGetData(clipboard, target, &length);
+            if (uris && length && length <= 1024 * 1024) {
+                char* terminated = strndup(uris, length);
+                if (terminated) bridge->files_callback(bridge->opaque, terminated);
+                free(terminated);
+            }
+            free(uris);
+        }
+    } else if (!bridge->requested_files && size >= 2 && size <= 2 * 1024 * 1024 && size % 2 == 0) {
+        WCHAR* wide = calloc(size / 2 + 1, sizeof(WCHAR));
+        if (!wide) return CHANNEL_RC_NO_MEMORY;
+        memcpy(wide, response->requestedFormatData, size);
+        char* utf8 = ConvertWCharToUtf8Alloc(wide, NULL);
+        free(wide);
+        if (utf8) { bridge->clipboard_callback(bridge->opaque, utf8); free(utf8); }
     }
     return CHANNEL_RC_OK;
 }
-static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_RESPONSE* response) {
-    RdpBridge* bridge = context->custom;
-    if (!(response->common.msgFlags & CB_RESPONSE_OK) || !response->requestedFormatData ||
-        response->common.dataLen < 2 || response->common.dataLen > 2 * 1024 * 1024 ||
-        response->common.dataLen % 2) return CHANNEL_RC_OK;
-    size_t count = response->common.dataLen / 2;
-    WCHAR* wide = calloc(count + 1, sizeof(WCHAR));
-    if (!wide) return CHANNEL_RC_NO_MEMORY;
-    memcpy(wide, response->requestedFormatData, response->common.dataLen);
-    char* utf8 = ConvertWCharToUtf8Alloc(wide, NULL);
-    free(wide);
-    if (utf8) { bridge->clipboard_callback(bridge->opaque, utf8); free(utf8); }
-    return CHANNEL_RC_OK;
-}
 static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_REQUEST* request) {
-    RdpBridge* bridge = context->custom;
+    RdpBridge* bridge = clipboard_bridge(context);
     CLIPRDR_FORMAT_DATA_RESPONSE response = { .common = { .msgType = CB_FORMAT_DATA_RESPONSE } };
     WCHAR* wide = NULL;
     BYTE* file_data = NULL;
@@ -238,7 +342,7 @@ static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRD
     return result;
 }
 static UINT clipboard_file_request(CliprdrClientContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
-    RdpBridge* bridge = context->custom;
+    RdpBridge* bridge = clipboard_bridge(context);
     CLIPRDR_FILE_CONTENTS_RESPONSE response = { .common = { .msgType = CB_FILECONTENTS_RESPONSE,
         .msgFlags = CB_RESPONSE_FAIL }, .streamId = request->streamId };
     BYTE* data = NULL;
@@ -324,6 +428,24 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
         bridge->clipboard = clip;
         bridge->clipboard_ready = FALSE;
         clip->custom = bridge;
+        if (bridge->files_callback && access("/dev/fuse", R_OK | W_OK) == 0 &&
+            !atomic_exchange(&clipboard_mount_in_use, TRUE)) {
+            CliprdrFileContext* files = cliprdr_file_context_new(bridge);
+            if (files && cliprdr_file_context_has_local_support(files))
+                bridge->remote_clipboard = ClipboardCreate();
+            if (bridge->remote_clipboard && cliprdr_file_context_init(files, clip)) {
+                bridge->remote_files = files;
+                clip->ServerCapabilities = clipboard_capabilities;
+            } else if (files) {
+                cliprdr_file_context_free(files);
+                clip->custom = bridge;
+                clip->ServerFileContentsResponse = NULL;
+            }
+            if (!bridge->remote_files) atomic_store(&clipboard_mount_in_use, FALSE);
+            /* Local offers use the bridge's own reader and do not negotiate locking. */
+            clip->ServerLockClipboardData = NULL;
+            clip->ServerUnlockClipboardData = NULL;
+        }
         clip->MonitorReady = clipboard_ready;
         clip->ServerFormatList = clipboard_server_list;
         clip->ServerFormatDataRequest = clipboard_server_request;
@@ -363,7 +485,21 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
 static void channel_disconnected(void* context, const ChannelDisconnectedEventArgs* event) {
     rdpContext* ctx = context;
     RdpBridge* bridge = bridge_of(ctx);
-    if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) { bridge->clipboard = NULL; bridge->clipboard_ready = FALSE; }
+    if (strcmp(event->name, CLIPRDR_SVC_CHANNEL_NAME) == 0) {
+        if (bridge->remote_files) {
+            BOOL detached = cliprdr_file_context_uninit(bridge->remote_files, bridge->clipboard);
+            (void)detached;
+            cliprdr_file_context_free(bridge->remote_files);
+            bridge->files_callback(bridge->opaque, "");
+            bridge->remote_files = NULL;
+            atomic_store(&clipboard_mount_in_use, FALSE);
+        }
+        if (bridge->remote_clipboard) ClipboardDestroy(bridge->remote_clipboard);
+        bridge->remote_clipboard = NULL;
+        bridge->clipboard = NULL;
+        bridge->clipboard_ready = FALSE;
+        bridge->requested_format = bridge->offered_format = 0;
+    }
     EnterCriticalSection(&bridge->graphics_lock);
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) { bridge->disp = NULL; bridge->disp_ready = FALSE; }
     if (strcmp(event->name, RDPGFX_DVC_CHANNEL_NAME) == 0 && bridge->gfx) {
@@ -481,6 +617,10 @@ static BOOL post_connect(freerdp* instance) {
 }
 static void post_disconnect(freerdp* instance) {
     RdpBridge* bridge = bridge_of(instance->context);
+    if (bridge->clipboard) {
+        ChannelDisconnectedEventArgs clipboard_event = { .name = CLIPRDR_SVC_CHANNEL_NAME };
+        channel_disconnected(instance->context, &clipboard_event);
+    }
     PubSub_UnsubscribeChannelConnected(instance->context->pubSub, channel_connected);
     PubSub_UnsubscribeChannelDisconnected(instance->context->pubSub, channel_disconnected);
     EnterCriticalSection(&bridge->graphics_lock);

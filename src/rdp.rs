@@ -61,6 +61,7 @@ extern "C" {
         files: *const NativeClipboardFile,
         count: u32,
     ) -> c_int;
+    fn rdp_manager_clipboard_receive_files(native: *mut Native, callback: ClipboardCallback);
     fn rdp_manager_connect(native: *mut Native) -> c_int;
     fn rdp_manager_poll(native: *mut Native) -> c_int;
     fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
@@ -142,6 +143,7 @@ pub enum CertificateDecision {
 pub enum Event {
     Connected,
     Clipboard(String),
+    ClipboardFiles(String),
     Certificate(Certificate, mpsc::Sender<CertificateDecision>),
     Ended {
         code: u32,
@@ -308,6 +310,16 @@ unsafe extern "C" fn clipboard_callback(opaque: *mut c_void, text: *const c_char
         let text = unsafe { CStr::from_ptr(text) }.to_string_lossy();
         if text.len() <= 1024 * 1024 {
             let _ = callbacks.events.send(Event::Clipboard(text.into_owned()));
+        }
+    });
+}
+unsafe extern "C" fn clipboard_files_callback(opaque: *mut c_void, uris: *const c_char) {
+    let _ = std::panic::catch_unwind(|| {
+        let callbacks = unsafe { &*(opaque as *const Callbacks) };
+        if let Ok(uris) = unsafe { CStr::from_ptr(uris) }.to_str() {
+            let _ = callbacks
+                .events
+                .send(Event::ClipboardFiles(uris.to_owned()));
         }
     });
 }
@@ -553,7 +565,10 @@ fn run(
             }
         }
     }
-    let connected = unsafe { rdp_manager_connect(native) } != 0;
+    let connected = unsafe {
+        rdp_manager_clipboard_receive_files(native, clipboard_files_callback);
+        rdp_manager_connect(native)
+    } != 0;
     if connected {
         let _ = callbacks.events.send(Event::Connected);
         let trace = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
@@ -807,7 +822,7 @@ mod tests {
                     reply.send(CertificateDecision::Reject).unwrap();
                 }
                 Event::Connected => panic!("Rejected certificate connected"),
-                Event::Clipboard(_) => {}
+                Event::Clipboard(_) | Event::ClipboardFiles(_) => {}
                 Event::Ended { .. } => break,
             }
         }
@@ -822,7 +837,7 @@ mod tests {
                     reply.send(CertificateDecision::Session).unwrap();
                 }
                 Event::Connected => panic!("Wrong NLA password connected"),
-                Event::Clipboard(_) => {}
+                Event::Clipboard(_) | Event::ClipboardFiles(_) => {}
                 Event::Ended { code, .. } => {
                     assert_ne!(code, 0);
                     break;
@@ -854,7 +869,7 @@ mod tests {
                     control.send(Input::mouse(0x9000, 10, 12));
                     control.send(Input::mouse(0x1000, 10, 12));
                 }
-                Ok(Event::Clipboard(_)) => {}
+                Ok(Event::Clipboard(_) | Event::ClipboardFiles(_)) => {}
                 Ok(Event::Ended { message, .. }) => panic!("Unexpected disconnect: {message}"),
                 Err(mpsc::TryRecvError::Empty) => {}
                 Err(mpsc::TryRecvError::Disconnected) => break,
@@ -933,7 +948,9 @@ mod tests {
             }
             Event::Ended { message, .. } => panic!("No prompt: {message}"),
             Event::Connected => panic!("Certificate was persisted unexpectedly"),
-            Event::Clipboard(_) => panic!("Unexpected clipboard event before connection"),
+            Event::Clipboard(_) | Event::ClipboardFiles(_) => {
+                panic!("Unexpected clipboard event before connection")
+            }
         }
         loop {
             if matches!(
@@ -967,7 +984,7 @@ mod tests {
                         connected = true;
                         control.stop();
                     }
-                    Event::Clipboard(_) => {}
+                    Event::Clipboard(_) | Event::ClipboardFiles(_) => {}
                     Event::Ended { .. } => break,
                 }
             }
@@ -991,7 +1008,7 @@ mod tests {
                     Event::Certificate(_, _) => panic!("Saved certificate was not reused"),
                     Event::Ended { message, .. } => panic!("EGFX ended early: {message}"),
                     Event::Connected => {}
-                    Event::Clipboard(_) => {}
+                    Event::Clipboard(_) | Event::ClipboardFiles(_) => {}
                 }
             }
             if let Some(frame) = control.take_frame() {

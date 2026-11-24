@@ -14,6 +14,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
                           const char* password, const char* domain, const char* shared_folder, uint32_t width, uint32_t height,
                           uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate, RdpClipboard clipboard);
 int rdp_manager_clipboard_set_text(RdpBridge*, const char*);
+void rdp_manager_clipboard_receive_files(RdpBridge*, RdpClipboard);
 int rdp_manager_clipboard_set_files(RdpBridge*, const RdpClipboardFile*, uint32_t);
 int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);

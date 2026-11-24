@@ -5,10 +5,10 @@ revision=97eff6ddfbbfaa8e42a126d362686bd001ff8bdc
 source_dir="$root/.deps/src/FreeRDP-3.32.2"
 build_dir="$root/.deps/build/FreeRDP-3.32.2"
 prefix="$root/.deps/freerdp-h264"
-for package in libavcodec libavformat libavutil libswscale libswresample openssl json-c; do
+for package in libavcodec libavformat libavutil libswscale libswresample openssl json-c fuse3; do
     if ! pkg-config --exists "$package"; then
         printf 'Missing build dependency: %s\n' "$package" >&2
-        printf 'Install: build-essential cmake git pkg-config libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libssl-dev libjson-c-dev\n' >&2
+        printf 'Install: build-essential cmake git pkg-config libavcodec-dev libavformat-dev libavutil-dev libswscale-dev libswresample-dev libssl-dev libjson-c-dev libfuse3-dev\n' >&2
         exit 1
     fi
 done
@@ -36,7 +36,7 @@ cmake -S "$source_dir" -B "$build_dir" \
     -DWITH_FFMPEG=ON -DWITH_VIDEO_FFMPEG=ON -DWITH_FFMPEG_HWACCEL=ON \
     -DWITH_SWSCALE=ON -DWITH_DSP_FFMPEG=OFF -DWITH_OPENH264=OFF \
     -DWITH_CUPS=OFF -DWITH_PCSC=OFF -DWITH_PULSE=OFF -DWITH_ALSA=OFF \
-    -DWITH_OSS=OFF -DWITH_FUSE=OFF -DWITH_JPEG=OFF -DWITH_AAD=OFF \
+    -DWITH_OSS=OFF -DWITH_FUSE=ON -DWITH_JPEG=OFF -DWITH_AAD=OFF \
     -DWITH_MANPAGES=OFF -DWITH_URIPARSER=OFF -DWITH_SYSTEMD=OFF
 cmake --build "$build_dir" --parallel "${RDP_MANAGER_BUILD_JOBS:-4}"
 cmake --install "$build_dir"
