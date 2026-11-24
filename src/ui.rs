@@ -330,8 +330,28 @@ fn create_session_window(
 
     let tabs = adw::TabView::new();
     let close_state = state.clone();
-    tabs.connect_close_page(move |_, page| {
+    let close_window = window.downgrade();
+    tabs.connect_close_page(move |tabs, page| {
+        if tabs.selected_page().as_ref() == Some(page) {
+            if let Some(window) = close_window
+                .upgrade()
+                .filter(|window| window.is_fullscreen())
+            {
+                window.unfullscreen();
+            }
+        }
         close_state.close_session(&page.child());
+        if tabs.n_pages() == 1 {
+            let tabs = tabs.downgrade();
+            let window = close_window.clone();
+            gtk::glib::idle_add_local_once(move || {
+                if let (Some(tabs), Some(window)) = (tabs.upgrade(), window.upgrade()) {
+                    if tabs.n_pages() == 0 && window.is_visible() {
+                        append_tab(&tabs);
+                    }
+                }
+            });
+        }
         gtk::glib::Propagation::Proceed
     });
     let weak_tabs = tabs.downgrade();

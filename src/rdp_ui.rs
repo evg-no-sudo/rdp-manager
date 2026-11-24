@@ -701,6 +701,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         if let Some(picture) = picture_on_disconnect.upgrade() {
             picture.set_paintable(None::<&gdk::Paintable>);
             picture.set_sensitive(false);
+            if let Some(window) = picture.root().and_downcast::<gtk::Window>() {
+                if window.is_fullscreen() {
+                    window.unfullscreen();
+                }
+            }
         }
         sender.stop();
         button.set_sensitive(false);
