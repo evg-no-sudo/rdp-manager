@@ -168,13 +168,8 @@ fn create_session_window(
         .tooltip_text("Показать профили")
         .active(true)
         .build();
-    let add = gtk::Button::builder()
-        .icon_name("list-add-symbolic")
-        .tooltip_text("Новая вкладка")
-        .build();
     let detach = gtk::Button::with_label("В отдельное окно");
     header.pack_start(&toggle);
-    header.pack_start(&add);
     header.pack_end(&detach);
     let return_tab = origin.as_ref().map(|_| {
         let button = gtk::Button::with_label("Вернуть вкладку");
@@ -412,17 +407,6 @@ fn create_session_window(
             }
         }
         close_state.close_session(&page.child());
-        if tabs.n_pages() == 1 {
-            let tabs = tabs.downgrade();
-            let window = close_window.clone();
-            gtk::glib::idle_add_local_once(move || {
-                if let (Some(tabs), Some(window)) = (tabs.upgrade(), window.upgrade()) {
-                    if tabs.n_pages() == 0 && window.is_visible() {
-                        append_tab(&tabs);
-                    }
-                }
-            });
-        }
         gtk::glib::Propagation::Proceed
     });
     let weak_tabs = tabs.downgrade();
@@ -449,7 +433,33 @@ fn create_session_window(
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.set_hexpand(true);
     content.append(&bar);
+    let empty = adw::StatusPage::builder()
+        .icon_name("network-server-symbolic")
+        .title("Нет открытых подключений")
+        .description("Выберите подключение в боковой панели.")
+        .vexpand(true)
+        .build();
     content.append(&tabs);
+    content.append(&empty);
+    let update_empty = {
+        let (bar, empty, detach) = (bar.downgrade(), empty.downgrade(), detach.downgrade());
+        move |tabs: &adw::TabView| {
+            let has_pages = tabs.n_pages() > 0;
+            tabs.set_visible(has_pages || tabs.is_transferring_page());
+            if let Some(bar) = bar.upgrade() {
+                bar.set_visible(has_pages || tabs.is_transferring_page());
+            }
+            if let Some(empty) = empty.upgrade() {
+                empty.set_visible(!has_pages);
+            }
+            if let Some(detach) = detach.upgrade() {
+                detach.set_sensitive(has_pages);
+            }
+        }
+    };
+    update_empty(&tabs);
+    tabs.connect_n_pages_notify(update_empty.clone());
+    tabs.connect_is_transferring_page_notify(update_empty);
     body.set_end_child(Some(&content));
     root.append(&body);
     let toolbar_owner = Rc::new(RefCell::new(None));
@@ -497,14 +507,6 @@ fn create_session_window(
         }
     });
     window.set_content(Some(&root));
-    append_tab(&tabs);
-
-    let weak_tabs = tabs.downgrade();
-    add.connect_clicked(move |_| {
-        if let Some(tabs) = weak_tabs.upgrade() {
-            append_tab(&tabs);
-        }
-    });
     let weak_app = app.downgrade();
     let weak_tabs = tabs.downgrade();
     detach.connect_clicked(move |_| {
@@ -512,14 +514,7 @@ fn create_session_window(
             if let Some(page) = tabs.selected_page() {
                 let (window, target) =
                     create_session_window(&app, state.clone(), Some(tabs.downgrade()));
-                // Remove the new window's initial placeholder before transferring the page.
-                if let Some(initial) = target.selected_page() {
-                    target.close_page(&initial);
-                }
                 tabs.transfer_page(&page, &target, 0);
-                if tabs.n_pages() == 0 {
-                    append_tab(&tabs);
-                }
                 window.present();
             }
         }
@@ -549,17 +544,4 @@ fn create_session_window(
         });
     }
     (window, tabs)
-}
-
-fn append_tab(tabs: &adw::TabView) {
-    let page = adw::StatusPage::builder()
-        .icon_name("network-server-symbolic")
-        .title("Новая RDP-сессия")
-        .description(
-            "Нажмите кнопку подключения справа от нужного профиля в боковой панели. Параметры профиля открываются нажатием на его название.",
-        )
-        .build();
-    let tab = tabs.append(&page);
-    tab.set_title("Новая сессия");
-    tabs.set_selected_page(&tab);
 }
