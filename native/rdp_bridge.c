@@ -551,10 +551,13 @@ static BOOL load_channels(freerdp* instance) {
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportVideoOptimized, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportGeometryTracking, FALSE) ||
         !freerdp_settings_set_bool(ctx->settings, FreeRDP_SupportDisplayControl, TRUE)) return FALSE;
-    if (freerdp_static_channel_collection_find(ctx->settings, "rdpsnd") &&
-        !freerdp_client_del_static_channel(ctx->settings, "rdpsnd")) return FALSE;
-    if (freerdp_dynamic_channel_collection_find(ctx->settings, "rdpsnd") &&
-        !freerdp_client_del_dynamic_channel(ctx->settings, "rdpsnd")) return FALSE;
+    const char* audio = getenv("RDP_MANAGER_AUDIO");
+    if ((!audio || strcmp(audio, "off") != 0) &&
+        strstr(freerdp_get_build_config(), "WITH_PULSE=ON")) {
+        const char* const sound[] = { "rdpsnd", "sys:pulse" };
+        if (!freerdp_client_add_static_channel(ctx->settings, 2, sound) ||
+            !freerdp_client_add_dynamic_channel(ctx->settings, 2, sound)) return FALSE;
+    }
     if (!freerdp_client_load_addins(ctx->channels, ctx->settings)) return FALSE;
     bridge_of(ctx)->channel_loads++;
     return TRUE;
