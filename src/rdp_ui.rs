@@ -20,6 +20,23 @@ fn message(label: &gtk::Label, text: &str, success: bool) {
     label.set_text(text);
     label.set_visible(true);
 }
+fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
+    let formats = clipboard.formats();
+    if [
+        "text/uri-list",
+        "x-special/gnome-copied-files",
+        "application/x-gtk-file-list",
+    ]
+    .iter()
+    .any(|mime| formats.contain_mime_type(mime))
+    {
+        return false;
+    }
+    formats.contains_type(glib::Type::STRING)
+        || ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
+            .iter()
+            .any(|mime| formats.contain_mime_type(mime))
+}
 fn connect_saved(
     parent: &adw::ApplicationWindow,
     tabs: &adw::TabView,
@@ -253,6 +270,9 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_sender = std::sync::Arc::downgrade(&control);
     let expected_on_change = expected_remote_text.clone();
     let clipboard_handler = clipboard.connect_changed(move |clipboard| {
+        if !clipboard_has_text(clipboard) {
+            return;
+        }
         let weak_sender = weak_sender.clone();
         let expected = expected_on_change.clone();
         clipboard.read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
@@ -423,16 +443,18 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     capture.set_active(true);
                     let sender = clipboard_sender.clone();
                     let expected = expected_on_connect.clone();
-                    session_clipboard.read_text_async(
-                        None::<&gtk::gio::Cancellable>,
-                        move |result| {
-                            if let (Some(sender), Ok(Some(text))) = (sender.upgrade(), result) {
-                                if expected.borrow().as_deref() != Some(text.as_str()) {
-                                    sender.clipboard_text(text.to_string());
+                    if clipboard_has_text(&session_clipboard) {
+                        session_clipboard.read_text_async(
+                            None::<&gtk::gio::Cancellable>,
+                            move |result| {
+                                if let (Some(sender), Ok(Some(text))) = (sender.upgrade(), result) {
+                                    if expected.borrow().as_deref() != Some(text.as_str()) {
+                                        sender.clipboard_text(text.to_string());
+                                    }
                                 }
-                            }
-                        },
-                    );
+                            },
+                        );
+                    }
                     if let Some(id) = history {
                         let _ = state.store.history_connected(id);
                     }
