@@ -85,6 +85,14 @@ pub fn create_window(
     app: &adw::Application,
     state: Rc<State>,
 ) -> (adw::ApplicationWindow, adw::TabView) {
+    create_session_window(app, state, None)
+}
+
+fn create_session_window(
+    app: &adw::Application,
+    state: Rc<State>,
+    origin: Option<gtk::glib::WeakRef<adw::TabView>>,
+) -> (adw::ApplicationWindow, adw::TabView) {
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Linux RDP Manager")
@@ -106,6 +114,11 @@ pub fn create_window(
     header.pack_start(&toggle);
     header.pack_start(&add);
     header.pack_end(&detach);
+    let return_tab = origin.as_ref().map(|_| {
+        let button = gtk::Button::with_label("Вернуть вкладку");
+        header.pack_end(&button);
+        button
+    });
     root.append(&header);
 
     let body = gtk::Paned::builder()
@@ -325,16 +338,44 @@ pub fn create_window(
     detach.connect_clicked(move |_| {
         if let (Some(app), Some(tabs)) = (weak_app.upgrade(), weak_tabs.upgrade()) {
             if let Some(page) = tabs.selected_page() {
-                let (window, target) = create_window(&app, state.clone());
+                let (window, target) =
+                    create_session_window(&app, state.clone(), Some(tabs.downgrade()));
                 // Remove the new window's initial placeholder before transferring the page.
                 if let Some(initial) = target.selected_page() {
                     target.close_page(&initial);
                 }
                 tabs.transfer_page(&page, &target, 0);
+                if tabs.n_pages() == 0 {
+                    append_tab(&tabs);
+                }
                 window.present();
             }
         }
     });
+    if let (Some(button), Some(origin)) = (return_tab, origin) {
+        let source = tabs.downgrade();
+        button.connect_clicked(move |button| {
+            let Some(source) = source.upgrade() else {
+                return;
+            };
+            let Some(target) = origin.upgrade() else {
+                button.set_sensitive(false);
+                return;
+            };
+            if let Some(page) = source.selected_page() {
+                source.transfer_page(&page, &target, target.n_pages());
+                target.set_selected_page(&page);
+                if let Some(window) = target.root().and_downcast::<gtk::Window>() {
+                    window.present();
+                }
+                if source.n_pages() == 0 {
+                    if let Some(window) = source.root().and_downcast::<gtk::Window>() {
+                        window.close();
+                    }
+                }
+            }
+        });
+    }
     (window, tabs)
 }
 
