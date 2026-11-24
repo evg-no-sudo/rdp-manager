@@ -295,6 +295,24 @@ pub fn create_window(
     content.append(&tabs);
     body.set_end_child(Some(&content));
     root.append(&body);
+    let fullscreen_header = header.downgrade();
+    let fullscreen_bar = bar.downgrade();
+    let fullscreen_sidebar = sidebar.downgrade();
+    let sidebar_toggle = toggle.downgrade();
+    window.connect_fullscreened_notify(move |window| {
+        let fullscreen = window.is_fullscreen();
+        if let Some(header) = fullscreen_header.upgrade() {
+            header.set_visible(!fullscreen);
+        }
+        if let Some(bar) = fullscreen_bar.upgrade() {
+            bar.set_visible(!fullscreen);
+        }
+        if let (Some(sidebar), Some(toggle)) =
+            (fullscreen_sidebar.upgrade(), sidebar_toggle.upgrade())
+        {
+            sidebar.set_visible(!fullscreen && toggle.is_active());
+        }
+    });
     window.set_content(Some(&root));
     append_tab(&tabs);
 

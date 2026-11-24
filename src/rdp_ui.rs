@@ -258,6 +258,16 @@ pub fn connect(
     });
 }
 
+fn toggle_fullscreen(widget: &impl IsA<gtk::Widget>) {
+    if let Some(window) = widget.root().and_downcast::<gtk::Window>() {
+        if window.is_fullscreen() {
+            window.unfullscreen();
+        } else {
+            window.fullscreen();
+        }
+    }
+}
+
 fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config) {
     let root = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let toolbar = gtk::Box::new(gtk::Orientation::Horizontal, 8);
@@ -278,6 +288,35 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     capture.set_focus_on_click(false);
     capture.set_sensitive(false);
     toolbar.append(&capture);
+    let fullscreen = gtk::Button::from_icon_name("view-fullscreen-symbolic");
+    fullscreen.set_tooltip_text(Some("Полный экран / выход (Ctrl+Shift+F11)"));
+    fullscreen.set_focus_on_click(false);
+    fullscreen.connect_clicked(toggle_fullscreen);
+    toolbar.append(&fullscreen);
+
+    let fullscreen_keys = gtk::EventControllerKey::new();
+    fullscreen_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let fullscreen_down = Rc::new(Cell::new(false));
+    let pressed = fullscreen_down.clone();
+    fullscreen_keys.connect_key_pressed(move |controller, key, _, modifiers| {
+        let chord = gdk::ModifierType::CONTROL_MASK | gdk::ModifierType::SHIFT_MASK;
+        if key == gdk::Key::F11 && (pressed.get() || modifiers.contains(chord)) {
+            if !pressed.replace(true) {
+                if let Some(widget) = controller.widget() {
+                    toggle_fullscreen(&widget);
+                }
+            }
+            return glib::Propagation::Stop;
+        }
+        glib::Propagation::Proceed
+    });
+    fullscreen_keys.connect_key_released(move |_, key, _, _| {
+        if key == gdk::Key::F11 {
+            fullscreen_down.set(false);
+        }
+    });
+    root.add_controller(fullscreen_keys);
+
     let text_mode = gtk::CheckButton::with_label("Текст Unicode по локальной раскладке");
     let keyboard_mode = gtk::Label::new(Some("Раскладка: сервер"));
     keyboard_mode.add_css_class("dim-label");
