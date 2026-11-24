@@ -40,59 +40,120 @@ fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
             .any(|mime| formats.contain_mime_type(mime))
 }
 const REMOTE_FILES_MIME: &str = "application/x-rdp-manager-remote-files";
-fn relay_files(
-    clipboard: &gdk::Clipboard,
-    picture: &gtk::Picture,
-    source_marker: &str,
+#[derive(Clone)]
+struct FileRelay {
+    provider: Rc<RefCell<Option<gdk::ContentProvider>>>,
+    status: glib::WeakRef<gtk::Label>,
+    marker: String,
     sender: std::sync::Weak<rdp::Control>,
-) {
-    let formats = clipboard.formats();
-    if !picture.has_focus()
-        || !formats.contain_mime_type(REMOTE_FILES_MIME)
-        || formats.contain_mime_type(source_marker)
-    {
-        return;
-    }
-    let Some(provider) = clipboard.content() else {
-        return;
-    };
-    let clipboard_ref = clipboard.downgrade();
-    let picture_ref = picture.downgrade();
-    clipboard.read_value_async(
-        gdk::FileList::static_type(),
-        glib::Priority::DEFAULT,
-        None::<&gtk::gio::Cancellable>,
-        move |result| {
-            let Ok(value) = result else {
+}
+
+impl FileRelay {
+    fn offer(&self, clipboard: &gdk::Clipboard, picture: &gtk::Picture) {
+        use std::sync::{
+            atomic::{AtomicBool, AtomicU64, Ordering::Relaxed},
+            Arc,
+        };
+
+        let formats = clipboard.formats();
+        if !picture.has_focus()
+            || !picture.is_sensitive()
+            || !formats.contain_mime_type(REMOTE_FILES_MIME)
+            || formats.contain_mime_type(&self.marker)
+        {
+            return;
+        }
+        let Some(provider) = clipboard.content() else {
+            return;
+        };
+        if self.provider.borrow().as_ref() == Some(&provider) {
+            return;
+        }
+        self.provider.replace(Some(provider.clone()));
+        let clipboard = clipboard.clone();
+        let relay = self.clone();
+        glib::MainContext::default().spawn_local(async move {
+            let prepared = async {
+                let value = clipboard
+                    .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
+                    .await
+                    .map_err(|_| "Не удалось прочитать список файлов.")?;
+                let files = value
+                    .get::<gdk::FileList>()
+                    .map_err(|_| "Не удалось прочитать список файлов.")?;
+                let paths: Option<Vec<_>> = files.files().iter().map(|file| file.path()).collect();
+                let paths = paths.ok_or("Исходные файлы недоступны.")?;
+                if clipboard.content().as_ref() != Some(&provider) {
+                    return Err("Буфер обмена изменился.");
+                }
+                let progress = Arc::new(AtomicU64::new(0));
+                let total = Arc::new(AtomicU64::new(0));
+                let cancelled = Arc::new(AtomicBool::new(false));
+                let status = relay.status.clone();
+                let sender = relay.sender.clone();
+                let cb = clipboard.clone();
+                let expected = provider.clone();
+                let counters = (progress.clone(), total.clone(), cancelled.clone());
+                if let Some(status) = status.upgrade() {
+                    message(&status, "Подготовка файлов…", true);
+                }
+                let timer = glib::timeout_add_local(Duration::from_millis(250), move || {
+                    if cb.content().as_ref() != Some(&expected)
+                        || sender.upgrade().map_or(true, |sender| sender.is_stopped())
+                    {
+                        counters.2.store(true, Relaxed);
+                    } else if let Some(status) = status.upgrade() {
+                        let done = counters.0.load(Relaxed);
+                        let total = counters.1.load(Relaxed);
+                        if total > 0 {
+                            const MIB: f64 = 1_048_576.0;
+                            message(
+                                &status,
+                                &format!(
+                                    "Подготовка файлов: {:.1} / {:.1} МиБ",
+                                    done as f64 / MIB,
+                                    total as f64 / MIB
+                                ),
+                                true,
+                            );
+                        }
+                    }
+                    glib::ControlFlow::Continue
+                });
+                let result = gtk::gio::spawn_blocking(move || {
+                    clipboard_files::stage(&paths, &progress, &total, &cancelled)
+                })
+                .await;
+                timer.remove();
+                result.map_err(|_| "Подготовка файлов прервана.")?
+            }
+            .await;
+            if relay.provider.borrow().as_ref() != Some(&provider) {
                 return;
-            };
-            let Ok(files) = value.get::<gdk::FileList>() else {
-                return;
-            };
-            let Some(paths): Option<Vec<_>> =
-                files.files().iter().map(|file| file.path()).collect()
-            else {
-                return;
-            };
-            glib::MainContext::default().spawn_local(async move {
-                let Ok(Ok(entries)) =
-                    gtk::gio::spawn_blocking(move || clipboard_files::snapshot(&paths)).await
-                else {
-                    return;
-                };
-                if picture_ref
-                    .upgrade()
-                    .is_some_and(|picture| picture.has_focus())
-                    && clipboard_ref.upgrade().and_then(|cb| cb.content()).as_ref()
-                        == Some(&provider)
-                {
-                    if let Some(sender) = sender.upgrade() {
-                        sender.clipboard_files(entries);
+            }
+            if let Some(sender) = relay.sender.upgrade().filter(|sender| !sender.is_stopped()) {
+                if let Some(status) = relay.status.upgrade() {
+                    if clipboard.content().as_ref() != Some(&provider) {
+                        message(
+                            &status,
+                            "Копирование отменено: буфер обмена изменился.",
+                            false,
+                        );
+                    } else {
+                        match prepared {
+                            Ok((entries, directory)) => {
+                                sender.offer_clipboard_files(entries, Some(directory));
+                                message(&status, "Файлы готовы к вставке", true);
+                                return;
+                            }
+                            Err(error) => message(&status, error, false),
+                        }
                     }
                 }
-            });
-        },
-    );
+            }
+            relay.provider.replace(None);
+        });
+    }
 }
 
 fn offer_clipboard(
@@ -543,21 +604,23 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let expected_remote_text = Rc::new(RefCell::new(None::<String>));
     let weak_sender = std::sync::Arc::downgrade(&control);
     let source_marker = format!("{REMOTE_FILES_MIME}-{}", glib::uuid_string_random());
-    let marker_on_change = source_marker.clone();
+    let relay = FileRelay {
+        provider: Rc::new(RefCell::new(None)),
+        status: status.downgrade(),
+        marker: source_marker.clone(),
+        sender: weak_sender.clone(),
+    };
+    let relay_on_change = relay.clone();
     let expected_on_change = expected_remote_text.clone();
     let picture_on_change = picture.downgrade();
     let sender_on_change = weak_sender.clone();
     let clipboard_handler = clipboard.connect_changed(move |clipboard| {
         if clipboard.formats().contain_mime_type(REMOTE_FILES_MIME) {
             if let Some(picture) = picture_on_change.upgrade() {
-                relay_files(
-                    clipboard,
-                    &picture,
-                    &marker_on_change,
-                    sender_on_change.clone(),
-                );
+                relay_on_change.offer(clipboard, &picture);
             }
         } else {
+            relay_on_change.provider.replace(None);
             offer_clipboard(
                 clipboard,
                 sender_on_change.clone(),
@@ -566,14 +629,8 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         }
     });
     let clipboard_on_focus = clipboard.clone();
-    let marker_on_focus = source_marker.clone();
     picture.connect_has_focus_notify(move |picture| {
-        relay_files(
-            &clipboard_on_focus,
-            picture,
-            &marker_on_focus,
-            weak_sender.clone(),
-        );
+        relay.offer(&clipboard_on_focus, picture);
     });
     let clipboard_on_close = clipboard.clone();
     let clipboard_handler = RefCell::new(Some(clipboard_handler));

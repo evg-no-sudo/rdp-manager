@@ -201,7 +201,7 @@ pub struct Control {
 }
 enum ClipboardOffer {
     Text(String),
-    Files(Vec<clipboard_files::Entry>),
+    Files(Vec<clipboard_files::Entry>, Option<tempfile::TempDir>),
 }
 impl Control {
     fn wake_input(&self) {
@@ -212,6 +212,9 @@ impl Control {
                 }
             }
         }
+    }
+    pub fn is_stopped(&self) -> bool {
+        self.stopped.load(Ordering::Acquire)
     }
     pub fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
@@ -284,11 +287,18 @@ impl Control {
         self.wake_input();
     }
     pub fn clipboard_files(&self, files: Vec<clipboard_files::Entry>) {
+        self.offer_clipboard_files(files, None);
+    }
+    pub fn offer_clipboard_files(
+        &self,
+        files: Vec<clipboard_files::Entry>,
+        staged: Option<tempfile::TempDir>,
+    ) {
         if files.is_empty() || self.stopped.load(Ordering::Acquire) {
             return;
         }
         if let Ok(mut pending) = self.clipboard.lock() {
-            *pending = Some(ClipboardOffer::Files(files));
+            *pending = Some(ClipboardOffer::Files(files, staged));
         }
         self.wake_input();
     }
@@ -569,6 +579,7 @@ fn run(
         rdp_manager_clipboard_receive_files(native, clipboard_files_callback);
         rdp_manager_connect(native)
     } != 0;
+    let mut staged_clipboard = None;
     if connected {
         let _ = callbacks.events.send(Event::Connected);
         let trace = std::env::var_os("RDP_MANAGER_TRACE_GRAPHICS").is_some();
@@ -634,11 +645,13 @@ fn run(
                     ClipboardOffer::Text(text) => {
                         if let Ok(text) = CString::new(text) {
                             unsafe {
-                                rdp_manager_clipboard_set_text(native, text.as_ptr());
+                                if rdp_manager_clipboard_set_text(native, text.as_ptr()) != 0 {
+                                    staged_clipboard = None;
+                                }
                             }
                         }
                     }
-                    ClipboardOffer::Files(files) => {
+                    ClipboardOffer::Files(files, staged) => {
                         let paths = files
                             .iter()
                             .map(|f| CString::new(f.source.as_os_str().as_bytes()))
@@ -659,11 +672,14 @@ fn run(
                                 })
                                 .collect();
                             unsafe {
-                                rdp_manager_clipboard_set_files(
+                                if rdp_manager_clipboard_set_files(
                                     native,
                                     native_files.as_ptr(),
                                     native_files.len() as u32,
-                                );
+                                ) != 0
+                                {
+                                    staged_clipboard = staged;
+                                }
                             }
                         }
                     }
@@ -683,6 +699,7 @@ fn run(
     unsafe {
         rdp_manager_free(native);
     }
+    drop(staged_clipboard);
     if !connected && !control.stopped.load(Ordering::Acquire) {
         return Err(RunFailure{code,message:format!("Не удалось подключиться: {name} (0x{code:08X}). Проверьте сервер, сертификат и учётные данные.")});
     }
