@@ -62,36 +62,45 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     body.set_margin_start(16);
     body.set_margin_end(16);
     let notice = gtk::Label::builder().wrap(true).xalign(0.0)
-        .label("Ручной зашифрованный обмен наборами. Пароли RDP не отправляются. Каждый экспорт создаёт новый набор; автоматического слияния и переноса удалений пока нет. Сначала создайте отдельную папку в Nextcloud и укажите её WebDAV URL.").build();
+        .label(tr!("Ручной зашифрованный обмен наборами. Пароли RDP не отправляются. Каждый экспорт создаёт новый набор; автоматического слияния и переноса удалений пока нет. Сначала создайте отдельную папку в Nextcloud и укажите её WebDAV URL.", "Exchange encrypted bundles. Create a separate Nextcloud folder and enter its WebDAV URL. RDP passwords stay on this computer.")).build();
     body.append(&notice);
     let settings = Settings::load();
     let saved = settings.as_ref().ok().and_then(|value| value.clone());
-    let group = adw::PreferencesGroup::builder().title("Хранилище")
-        .description("Пример: https://cloud.example/remote.php/dav/files/USER/RdpManager/ — используйте пароль приложения Nextcloud. При изменении URL или пользователя введите пароль заново.").build();
+    let group = adw::PreferencesGroup::builder().title(tr!("Хранилище", "Storage"))
+        .description(tr!("Пример: https://cloud.example/remote.php/dav/files/USER/RdpManager/ — используйте пароль приложения Nextcloud. При изменении URL или пользователя введите пароль заново.", "Example: https://cloud.example/remote.php/dav/files/USER/RdpManager/. Use a Nextcloud app password and re-enter it if you change the URL or username.")).build();
     let directory = adw::EntryRow::builder()
-        .title("HTTPS URL каталога")
+        .title(tr!("HTTPS URL каталога", "Folder HTTPS URL"))
         .text(saved.as_ref().map(|s| s.directory.as_str()).unwrap_or(""))
         .build();
     let username = adw::EntryRow::builder()
-        .title("Пользователь WebDAV")
+        .title(tr!("Пользователь WebDAV", "WebDAV username"))
         .text(saved.as_ref().map(|s| s.username.as_str()).unwrap_or(""))
         .build();
     let token = adw::PasswordEntryRow::builder()
-        .title("Пароль приложения (пусто — взять сохранённый)")
+        .title(tr!(
+            "Пароль приложения (пусто — взять сохранённый)",
+            "App password (leave blank to use saved password)"
+        ))
         .build();
     group.add(&directory);
     group.add(&username);
     group.add(&token);
     body.append(&group);
-    let save = gtk::Button::with_label("Сохранить настройки и пароль приложения на этом ПК");
+    let save = gtk::Button::with_label(tr!(
+        "Сохранить настройки и пароль приложения на этом ПК",
+        "Save settings and app password on this computer"
+    ));
     body.append(&save);
-    let group = adw::PreferencesGroup::builder().title("Шифрование набора")
-        .description("Мастер-пароль отличается от пароля Nextcloud и нужен на принимающем устройстве. Для экспорта — минимум 12 символов. Он не сохраняется в настройках.").build();
+    let group = adw::PreferencesGroup::builder().title(tr!("Шифрование набора", "Bundle Encryption"))
+        .description(tr!("Мастер-пароль отличается от пароля Nextcloud и нужен на принимающем устройстве. Для экспорта — минимум 12 символов. Он не сохраняется в настройках.", "Use a separate master password of at least 12 characters. Enter it again on the receiving device.")).build();
     let master = adw::PasswordEntryRow::builder()
-        .title("Мастер-пароль набора")
+        .title(tr!("Мастер-пароль набора", "Bundle master password"))
         .build();
     let confirm = adw::PasswordEntryRow::builder()
-        .title("Повтор мастер-пароля (для отправки)")
+        .title(tr!(
+            "Повтор мастер-пароля (для отправки)",
+            "Repeat master password for upload"
+        ))
         .build();
     group.add(&master);
     group.add(&confirm);
@@ -110,7 +119,12 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
             for profile in profiles {
                 let row = adw::ActionRow::builder()
                     .title(&profile.name)
-                    .subtitle(format!("{} · порт {}", profile.host, profile.port))
+                    .subtitle(tr_format!(
+                        "{} · порт {}",
+                        "{} · port {}",
+                        profile.host,
+                        profile.port
+                    ))
                     .build();
                 row.set_use_markup(false);
                 let check = gtk::CheckButton::builder()
@@ -123,11 +137,24 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
                 candidates.push((check, PortableProfile::from(&profile)));
             }
         }
-        Err(_) => notify(&status, "Не удалось прочитать локальные профили.", false),
+        Err(_) => notify(
+            &status,
+            tr!(
+                "Не удалось прочитать локальные профили.",
+                "Could not read local profiles."
+            ),
+            false,
+        ),
     }
-    body.append(&gtk::Label::new(Some("Подключения для отправки")));
+    body.append(&gtk::Label::new(Some(tr!(
+        "Подключения для отправки",
+        "Connections to Upload"
+    ))));
     let selection = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for (label, active) in [("Выбрать все", true), ("Снять отметки", false)] {
+    for (label, active) in [
+        (tr!("Выбрать все", "Select All"), true),
+        (tr!("Снять отметки", "Clear Selection"), false),
+    ] {
         let button = gtk::Button::with_label(label);
         let checks: Vec<_> = candidates.iter().map(|(check, _)| check.clone()).collect();
         button.connect_clicked(move |_| {
@@ -139,12 +166,18 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     }
     body.append(&selection);
     body.append(&list);
-    let refresh = gtk::Button::with_label("Проверить подключение и обновить список наборов");
+    let refresh = gtk::Button::with_label(tr!(
+        "Проверить подключение и обновить список наборов",
+        "Test Connection and Refresh Bundles"
+    ));
     body.append(&refresh);
     let remote = gtk::DropDown::builder()
         .model(&gtk::StringList::new(&[]))
         .build();
-    remote.set_tooltip_text(Some("Набор для загрузки; новые наборы показаны первыми"));
+    remote.set_tooltip_text(Some(tr!(
+        "Набор для загрузки; новые наборы показаны первыми",
+        "Bundle to download, newest first"
+    )));
     body.append(&remote);
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
@@ -158,9 +191,15 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     footer.set_margin_top(8);
     footer.set_margin_bottom(16);
     footer.append(&status);
-    let upload = gtk::Button::with_label("Отправить отмеченные подключения");
+    let upload = gtk::Button::with_label(tr!(
+        "Отправить отмеченные подключения",
+        "Upload Selected Connections"
+    ));
     upload.add_css_class("suggested-action");
-    let download = gtk::Button::with_label("Открыть выбранный набор с сервера");
+    let download = gtk::Button::with_label(tr!(
+        "Открыть выбранный набор с сервера",
+        "Open Selected Bundle"
+    ));
     footer.append(&upload);
     footer.append(&download);
     root.append(&footer);
@@ -211,12 +250,15 @@ async fn resolve(
         return Ok((settings, token));
     }
     if !matches {
-        return Err("Введите пароль приложения для этого URL и пользователя. Пароль от другого хранилища не используется.".into());
+        return Err(tr!("Введите пароль приложения для этого URL и пользователя. Пароль от другого хранилища не используется.", "Enter the app password for this URL and username.").into());
     }
     let token = secrets::lookup_webdav(&settings.uid)
         .await
         .map_err(String::from)?
-        .ok_or("Сохранённого пароля WebDAV на этом ПК нет.")?;
+        .ok_or(tr!(
+            "Сохранённого пароля WebDAV на этом ПК нет.",
+            "No WebDAV password is saved on this computer."
+        ))?;
     Ok((settings, token))
 }
 
@@ -238,13 +280,16 @@ fn start(form: Rc<Form>, action: Action) {
             || master.len() > 1024
             || master.as_str() != form.confirm.text().as_str())
     {
-        notify(&form.status, "Для отправки введите и повторите мастер-пароль: минимум 12 символов, максимум 1024 байта.", false);
+        notify(&form.status, tr!("Для отправки введите и повторите мастер-пароль: минимум 12 символов, максимум 1024 байта.", "Enter and repeat a master password with at least 12 characters and at most 1,024 bytes."), false);
         return;
     }
     if matches!(action, Action::Download) && (master.is_empty() || master.len() > 1024) {
         notify(
             &form.status,
-            "Введите мастер-пароль выбранного набора.",
+            tr!(
+                "Введите мастер-пароль выбранного набора.",
+                "Enter the master password for the selected bundle."
+            ),
             false,
         );
         return;
@@ -257,7 +302,14 @@ fn start(form: Rc<Form>, action: Action) {
         .collect();
     if matches!(action, Action::Upload) {
         if profiles.is_empty() {
-            notify(&form.status, "Отметьте хотя бы одно подключение.", false);
+            notify(
+                &form.status,
+                tr!(
+                    "Отметьте хотя бы одно подключение.",
+                    "Select at least one connection."
+                ),
+                false,
+            );
             return;
         }
         match form.state.store.profiles() {
@@ -270,7 +322,10 @@ fn start(form: Rc<Form>, action: Action) {
             _ => {
                 notify(
                     &form.status,
-                    "Локальные профили изменились. Откройте окно WebDAV заново.",
+                    tr!(
+                        "Локальные профили изменились. Откройте окно WebDAV заново.",
+                        "Local profiles have changed. Reopen the WebDAV dialog."
+                    ),
                     false,
                 );
                 return;
@@ -284,7 +339,10 @@ fn start(form: Rc<Form>, action: Action) {
             None => {
                 notify(
                     &form.status,
-                    "Сначала обновите список и выберите набор.",
+                    tr!(
+                        "Сначала обновите список и выберите набор.",
+                        "Refresh the list and select a bundle."
+                    ),
                     false,
                 );
                 return;
@@ -301,7 +359,10 @@ fn start(form: Rc<Form>, action: Action) {
     {
         notify(
             &form.status,
-            "Адрес хранилища изменился. Обновите список наборов.",
+            tr!(
+                "Адрес хранилища изменился. Обновите список наборов.",
+                "The storage URL changed. Refresh the bundle list."
+            ),
             false,
         );
         return;
@@ -310,7 +371,8 @@ fn start(form: Rc<Form>, action: Action) {
     dialog.set_can_close(false);
     form.status.remove_css_class("error");
     form.status.remove_css_class("success");
-    form.status.set_text("Выполняется операция…");
+    form.status
+        .set_text(tr!("Выполняется операция…", "Working…"));
     form.status.set_visible(true);
     glib::MainContext::default().spawn_local(async move {
         let result = async {
@@ -321,11 +383,11 @@ fn start(form: Rc<Form>, action: Action) {
                 let old = form.saved.replace(Some(settings.clone()));
                 if let Some(old) = old.filter(|old| old.uid != settings.uid) {
                     if secrets::clear_webdav(&old.uid).await.is_err() {
-                        return Ok((None, "Настройки сохранены. Старый пароль WebDAV не удалось удалить из Secret Service.".into()));
+                        return Ok((None, tr!("Настройки сохранены. Старый пароль WebDAV не удалось удалить из Secret Service.", "Settings saved. Could not remove the old WebDAV password from Secret Service.").into()));
                     }
                 }
                 form.token.set_text("");
-                return Ok((None, "URL и пользователь сохранены в настройках; пароль приложения — только в локальном Secret Service.".into()));
+                return Ok((None, tr!("URL и пользователь сохранены в настройках; пароль приложения — только в локальном Secret Service.", "URL and username saved. The app password is stored in the local Secret Service.").into()));
             }
             let endpoint = (settings.directory.clone(), settings.username.clone());
             let result = gio::spawn_blocking(move || -> transfer::Result<Outcome> {
@@ -336,7 +398,7 @@ fn start(form: Rc<Form>, action: Action) {
                     Action::Download => Ok(Outcome::Downloaded(transfer::decrypt(&dav.download(&selected.unwrap())?, &master)?)),
                     Action::Save => unreachable!(),
                 }
-            }).await.map_err(|_| "Операция WebDAV прервана.")??;
+            }).await.map_err(|_| tr!("Операция WebDAV прервана.", "WebDAV operation interrupted."))??;
             if matches!(result, Outcome::Listed(_)) { form.listed_for.replace(Some(endpoint)); }
             Ok::<_, String>((Some(result), String::new()))
         }.await;
@@ -347,11 +409,11 @@ fn start(form: Rc<Form>, action: Action) {
                 let labels: Vec<_> = snapshots.iter().map(|s| format!("{} · {}", s.modified, s.name)).collect();
                 let labels: Vec<_> = labels.iter().map(String::as_str).collect();
                 form.remote.set_model(Some(&gtk::StringList::new(&labels)));
-                notify(&form.status, &format!("Подключение успешно. Найдено наборов: {}.", snapshots.len()), true);
+                notify(&form.status, &tr_format!("Подключение успешно. Найдено наборов: {}.", "Connected. Bundles found: {}.", snapshots.len()), true);
                 form.snapshots.replace(snapshots);
             }
-            Ok((Some(Outcome::Uploaded(name)), _)) => notify(&form.status, &format!("Зашифрованный набор отправлен: {name}. Обновите список для его открытия."), true),
-            Ok((Some(Outcome::Downloaded(profiles)), _)) => { notify(&form.status, "Набор загружен и расшифрован. Выберите подключения в окне просмотра.", true); transfer_ui::preview(&dialog, form.state.clone(), profiles); }
+            Ok((Some(Outcome::Uploaded(name)), _)) => notify(&form.status, &tr_format!("Зашифрованный набор отправлен: {name}. Обновите список для его открытия.", "Encrypted bundle uploaded: {name}. Refresh the list to open it."), true),
+            Ok((Some(Outcome::Downloaded(profiles)), _)) => { notify(&form.status, tr!("Набор загружен и расшифрован. Выберите подключения в окне просмотра.", "Bundle downloaded and decrypted. Select connections in the preview."), true); transfer_ui::preview(&dialog, form.state.clone(), profiles); }
             Err(error) => notify(&form.status, &error, false),
         }
     });

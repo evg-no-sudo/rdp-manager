@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
     let heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
     let title = if folder.is_empty() {
-        "Без папки"
+        tr!("Без папки", "Ungrouped")
     } else {
         folder
     };
@@ -21,9 +21,9 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
         "pan-down-symbolic"
     });
     toggle.set_tooltip_text(Some(if collapsed {
-        "Развернуть папку"
+        tr!("Развернуть папку", "Expand Folder")
     } else {
-        "Свернуть папку"
+        tr!("Свернуть папку", "Collapse Folder")
     }));
     toggle.add_css_class("flat");
     let toggle_state = state.clone();
@@ -47,7 +47,7 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
     heading.append(&title);
     if !folder.is_empty() {
         let rename = gtk::Button::from_icon_name("document-edit-symbolic");
-        rename.set_tooltip_text(Some("Переименовать папку"));
+        rename.set_tooltip_text(Some(tr!("Переименовать папку", "Rename Folder")));
         rename.add_css_class("flat");
         let state = state.clone();
         let folder = folder.to_owned();
@@ -68,7 +68,7 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
 
 fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
     let dialog = adw::AlertDialog::builder()
-        .heading("Переименовать папку")
+        .heading(tr!("Переименовать папку", "Rename Folder"))
         .build();
     let entry = gtk::Entry::builder()
         .text(&old)
@@ -76,7 +76,10 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
         .activates_default(true)
         .build();
     dialog.set_extra_child(Some(&entry));
-    dialog.add_responses(&[("cancel", "Отмена"), ("rename", "Переименовать")]);
+    dialog.add_responses(&[
+        ("cancel", tr!("Отмена", "Cancel")),
+        ("rename", tr!("Переименовать", "Rename")),
+    ]);
     dialog.set_close_response("cancel");
     dialog.set_default_response(Some("rename"));
     dialog.set_response_appearance("rename", adw::ResponseAppearance::Suggested);
@@ -99,10 +102,13 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
             Err(error) => {
                 if let Some(window) = weak_window.upgrade() {
                     let alert = adw::AlertDialog::builder()
-                        .heading("Не удалось переименовать папку")
+                        .heading(tr!(
+                            "Не удалось переименовать папку",
+                            "Could not rename the folder"
+                        ))
                         .body(error.to_string())
                         .build();
-                    alert.add_response("close", "Закрыть");
+                    alert.add_response("close", tr!("Закрыть", "Close"));
                     alert.present(Some(&window));
                 }
             }
@@ -129,12 +135,18 @@ pub fn refresh(state: &Rc<State>) {
         }
         match &profiles {
             Err(error) => {
-                let label = gtk::Label::new(Some(&format!("Ошибка чтения профилей: {error}")));
+                let label = gtk::Label::new(Some(&tr_format!(
+                    "Ошибка чтения профилей: {error}",
+                    "Could not load profiles: {error}"
+                )));
                 label.set_wrap(true);
                 list.append(&label);
             }
             Ok(profiles) if profiles.is_empty() => {
-                list.append(&gtk::Label::new(Some("Нет сохранённых профилей")));
+                list.append(&gtk::Label::new(Some(tr!(
+                    "Нет сохранённых профилей",
+                    "No saved profiles"
+                ))));
             }
             Ok(profiles) => {
                 let mut profiles: Vec<_> = profiles.iter().collect();
@@ -159,7 +171,12 @@ pub fn refresh(state: &Rc<State>) {
                     }
                     let row = adw::ActionRow::builder()
                         .title(&profile.name)
-                        .subtitle(format!("{} · порт {}", profile.host, profile.port))
+                        .subtitle(tr_format!(
+                            "{} · порт {}",
+                            "{} · port {}",
+                            profile.host,
+                            profile.port
+                        ))
                         .title_lines(1)
                         .subtitle_lines(1)
                         .activatable(true)
@@ -169,20 +186,23 @@ pub fn refresh(state: &Rc<State>) {
                         folders.get(&profile.uid).map(String::as_str).unwrap_or(""),
                     );
 
-                    row.set_tooltip_text(Some("Открыть настройки профиля"));
+                    row.set_tooltip_text(Some(tr!(
+                        "Открыть настройки профиля",
+                        "Open profile settings"
+                    )));
                     let connect = gtk::Button::builder()
                         .icon_name("media-playback-start-symbolic")
-                        .tooltip_text("Подключиться")
+                        .tooltip_text(tr!("Подключиться", "Connect"))
                         .valign(gtk::Align::Center)
                         .build();
                     row.add_suffix(&connect);
                     let more = gtk::MenuButton::builder()
                         .icon_name("view-more-symbolic")
                         .valign(gtk::Align::Center)
-                        .tooltip_text("Действия с подключением")
+                        .tooltip_text(tr!("Действия с подключением", "Connection Actions"))
                         .build();
                     let popover = gtk::Popover::new();
-                    let clone_button = gtk::Button::with_label("Клонировать…");
+                    let clone_button = gtk::Button::with_label(tr!("Клонировать…", "Duplicate…"));
                     popover.set_child(Some(&clone_button));
                     more.set_popover(Some(&popover));
                     row.add_suffix(&more);
@@ -200,12 +220,16 @@ pub fn refresh(state: &Rc<State>) {
                             draft.id = None;
                             draft.uid = gtk::glib::uuid_string_random().into();
                             let profiles = clone_state.store.profiles().unwrap_or_default();
-                            draft.name = format!("{} (копия)", source.name);
+                            draft.name = tr_format!("{} (копия)", "{} (copy)", source.name);
                             for index in 2..=profiles.len() + 2 {
                                 if !profiles.iter().any(|p| p.name == draft.name) {
                                     break;
                                 }
-                                draft.name = format!("{} (копия {index})", source.name);
+                                draft.name = tr_format!(
+                                    "{} (копия {index})",
+                                    "{} (copy {index})",
+                                    source.name
+                                );
                             }
                             edit_draft(&window, clone_state.clone(), draft, Some(uid));
                         }
@@ -257,10 +281,13 @@ fn edit_draft(
         Ok(options) => options,
         Err(error) => {
             let alert = adw::AlertDialog::builder()
-                .heading("Не удалось открыть настройки")
+                .heading(tr!(
+                    "Не удалось открыть настройки",
+                    "Could not open settings"
+                ))
                 .body(error.to_string())
                 .build();
-            alert.add_response("close", "Закрыть");
+            alert.add_response("close", tr!("Закрыть", "Close"));
             alert.present(Some(parent));
             return;
         }
@@ -268,9 +295,9 @@ fn edit_draft(
 
     let dialog = adw::Dialog::builder()
         .title(if profile.id.is_some() {
-            "Профиль подключения"
+            tr!("Профиль подключения", "Connection Profile")
         } else {
-            "Новое подключение"
+            tr!("Новое подключение", "New Connection")
         })
         .content_width(520)
         .content_height(620)
@@ -288,28 +315,40 @@ fn edit_draft(
         group.add(&row);
         row
     };
-    let name = entry("Название", &profile.name);
-    let host = entry("Сервер (DNS или IP)", &profile.host);
-    let port = entry("Порт", &profile.port.to_string());
-    let username = entry("Пользователь", &profile.username);
-    let domain = entry("Домен (необязательно)", &profile.domain);
+    let name = entry(tr!("Название", "Name"), &profile.name);
+    let host = entry(
+        tr!("Сервер (DNS или IP)", "Server (DNS or IP)"),
+        &profile.host,
+    );
+    let port = entry(tr!("Порт", "Port"), &profile.port.to_string());
+    let username = entry(tr!("Пользователь", "Username"), &profile.username);
+    let domain = entry(
+        tr!("Домен (необязательно)", "Domain (optional)"),
+        &profile.domain,
+    );
     let folders = state.store.profile_folders().unwrap_or_default();
     let folder_key = clone_source.as_deref().unwrap_or(&profile.uid);
     let initial_folder = folders.get(folder_key).cloned().unwrap_or_default();
-    let folder = entry("Папка (необязательно)", &initial_folder);
+    let folder = entry(
+        tr!("Папка (необязательно)", "Folder (optional)"),
+        &initial_folder,
+    );
     let new_profile = profile.id.is_none();
     let known: std::collections::BTreeSet<_> = folders.values().map(String::as_str).collect();
     if !known.is_empty() {
         let choices = gtk::MenuButton::builder()
             .icon_name("folder-open-symbolic")
-            .tooltip_text("Выбрать существующую папку")
+            .tooltip_text(tr!(
+                "Выбрать существующую папку",
+                "Choose an existing folder"
+            ))
             .valign(gtk::Align::Center)
             .build();
         let popover = gtk::Popover::new();
         let content = gtk::Box::new(gtk::Orientation::Vertical, 8);
         content.set_width_request(310);
         let search = gtk::SearchEntry::builder()
-            .placeholder_text("Найти папку")
+            .placeholder_text(tr!("Найти папку", "Find a folder"))
             .build();
         content.append(&search);
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
@@ -359,7 +398,7 @@ fn edit_draft(
 
     form.append(&group);
     let advanced = adw::ExpanderRow::builder()
-        .title("Дополнительные настройки")
+        .title(tr!("Дополнительные настройки", "Advanced Settings"))
         .build();
     let combo = |title: &str, items: &[&str], selected: u32| {
         let row = adw::ComboRow::builder()
@@ -371,25 +410,37 @@ fn edit_draft(
         row
     };
     let keyboard_layout = combo(
-        "Раскладка RDP",
-        &["Русская (ЙЦУКЕН)", "Английская (US)"],
+        tr!("Раскладка RDP", "RDP Keyboard Layout"),
+        &[
+            tr!("Русская (ЙЦУКЕН)", "Russian (ЙЦУКЕН)"),
+            tr!("Английская (US)", "English (US)"),
+        ],
         u32::from(options.keyboard_layout != 0x419),
     );
     let quality = combo(
-        "Графика",
+        tr!("Графика", "Graphics"),
         &[
-            "Авто: скорость и качество",
-            "Приоритет чёткости",
-            "H.264 без GPU (совместимость)",
-            "Точная передача (без потерь)",
-            "AVC444: скорость и чёткий текст",
+            tr!("Авто: скорость и качество", "Automatic: speed and quality"),
+            tr!("Приоритет чёткости", "Prioritize sharpness"),
+            tr!(
+                "H.264 без GPU (совместимость)",
+                "H.264 without GPU (compatibility)"
+            ),
+            tr!("Точная передача (без потерь)", "Lossless"),
+            tr!(
+                "AVC444: скорость и чёткий текст",
+                "AVC444: fast with sharp text"
+            ),
         ],
         options.quality,
     );
     let resolution = combo(
-        "Разрешение",
+        tr!("Разрешение", "Resolution"),
         &[
-            "Автоматически — по размеру окна",
+            tr!(
+                "Автоматически — по размеру окна",
+                "Automatic — match window size"
+            ),
             "1280 × 720",
             "1600 × 900",
             "1920 × 1080",
@@ -397,18 +448,21 @@ fn edit_draft(
         options.resolution,
     );
     let shared_folder = adw::EntryRow::builder()
-        .title("Общая папка на этом ПК (необязательно)")
+        .title(tr!(
+            "Общая папка на этом ПК (необязательно)",
+            "Shared folder on this computer (optional)"
+        ))
         .text(&options.shared_folder)
         .build();
     let browse_folder = gtk::Button::builder()
         .icon_name("folder-open-symbolic")
-        .tooltip_text("Выбрать папку")
+        .tooltip_text(tr!("Выбрать папку", "Choose Folder"))
         .valign(gtk::Align::Center)
         .build();
     shared_folder.add_suffix(&browse_folder);
     let clear_folder = gtk::Button::builder()
         .icon_name("edit-clear-symbolic")
-        .tooltip_text("Отключить общую папку")
+        .tooltip_text(tr!("Отключить общую папку", "Disable Shared Folder"))
         .valign(gtk::Align::Center)
         .build();
     shared_folder.add_suffix(&clear_folder);
@@ -427,7 +481,10 @@ fn edit_draft(
         };
         gtk::glib::MainContext::default().spawn_local(async move {
             let chooser = gtk::FileDialog::new();
-            chooser.set_title("Папка для передачи файлов по RDP");
+            chooser.set_title(tr!(
+                "Папка для передачи файлов по RDP",
+                "Folder for RDP file transfer"
+            ));
             if let Ok(file) = chooser.select_folder_future(Some(&window)).await {
                 if let Some(path) = file.path() {
                     folder.set_text(&path.to_string_lossy());
@@ -441,16 +498,25 @@ fn edit_draft(
     form.append(&advanced_group);
 
     let password = adw::PasswordEntryRow::builder()
-        .title("Новый пароль (только на этом ПК)")
+        .title(tr!(
+            "Новый пароль (только на этом ПК)",
+            "New password (this computer only)"
+        ))
         .build();
     let credentials = adw::PreferencesGroup::builder()
-        .description("Пустое поле оставляет сохранённый пароль без изменений. Пароли не входят в импорт и будущую синхронизацию.")
+        .description(tr!("Пустое поле оставляет сохранённый пароль без изменений. Пароли не входят в импорт и будущую синхронизацию.", "Leave blank to keep the saved password. Profile imports and sync exclude passwords."))
         .build();
     credentials.add(&password);
     form.append(&credentials);
-    let clear_password = gtk::CheckButton::with_label("Удалить сохранённый пароль при сохранении");
+    let clear_password = gtk::CheckButton::with_label(tr!(
+        "Удалить сохранённый пароль при сохранении",
+        "Remove the saved password on save"
+    ));
     form.append(&clear_password);
-    let check_password = gtk::Button::with_label("Проверить наличие сохранённого пароля");
+    let check_password = gtk::Button::with_label(tr!(
+        "Проверить наличие сохранённого пароля",
+        "Check for a saved password"
+    ));
     form.append(&check_password);
     // Keep actions and status visible while the taller form can scroll.
     let footer = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -462,7 +528,7 @@ fn edit_draft(
     error.set_wrap(true);
     error.set_visible(false);
     footer.append(&error);
-    let save = gtk::Button::with_label("Сохранить");
+    let save = gtk::Button::with_label(tr!("Сохранить", "Save"));
     save.add_css_class("suggested-action");
     footer.append(&save);
     let current_id = Rc::new(Cell::new(profile.id));
@@ -477,7 +543,7 @@ fn edit_draft(
             return;
         };
         let Some(operation) = check_state.operation(&check_uid) else {
-            show_error(&check_error, "В другом окне выполняется операция с этим профилем.");
+            show_error(&check_error, tr!("В другом окне выполняется операция с этим профилем.", "This profile is being updated in another window."));
             check_error.set_visible(true);
             return;
         };
@@ -490,8 +556,8 @@ fn edit_draft(
             let result = secrets::exists(&uid).await;
             drop(operation);
             match result {
-                Ok(true) => show_status(&error, "Пароль сохранён на этом ПК. Поле нового пароля остаётся пустым — это нормально.", "success"),
-                Ok(false) => show_status(&error, "Сохранённого пароля на этом ПК нет.", "dim-label"),
+                Ok(true) => show_status(&error, tr!("Пароль сохранён на этом ПК. Поле нового пароля остаётся пустым — это нормально.", "This computer has a saved password. The new password field stays blank."), "success"),
+                Ok(false) => show_status(&error, tr!("Сохранённого пароля на этом ПК нет.", "No saved password on this computer."), "dim-label"),
                 Err(message) => show_error(&error, message),
             }
             error.set_visible(true);
@@ -508,18 +574,18 @@ fn edit_draft(
     save.connect_clicked(move |_| {
         let Some(dialog) = weak_dialog.upgrade() else { return; };
         let Some(operation) = save_state.operation(&uid) else {
-            show_error(&save_error, "В другом окне выполняется операция с этим профилем.");
+            show_error(&save_error, tr!("В другом окне выполняется операция с этим профилем.", "This profile is being updated in another window."));
             save_error.set_visible(true);
             return;
         };
         if clear_password.is_active() && !password.text().is_empty() {
-            show_error(&save_error, "Выберите одно действие: ввести новый пароль или удалить сохранённый.");
+            show_error(&save_error, tr!("Выберите одно действие: ввести новый пароль или удалить сохранённый.", "Enter a new password or remove the saved one."));
             save_error.set_visible(true);
             return;
         }
         let result = (|| {
             let port = port.text().trim().parse::<u16>()
-                .map_err(|_| "Порт должен быть от 1 до 65535.")?;
+                .map_err(|_| tr!("Порт должен быть от 1 до 65535.", "Enter a port from 1 to 65535."))?;
             let folder_text = folder.text();
             let selected_folder = folder_text.trim();
             let folder_update = (new_profile || selected_folder != initial_folder).then_some(selected_folder);
@@ -568,14 +634,14 @@ fn edit_draft(
                     dialog.close();
                 }
                 Err(message) => {
-                    show_error(&error, &format!("Параметры профиля сохранены. Операция с паролем не выполнена. {message} Повторите сохранение после разблокировки хранилища."));
+                    show_error(&error, &tr_format!("Параметры профиля сохранены. Операция с паролем не выполнена. {message} Повторите сохранение после разблокировки хранилища.", "Profile settings were saved. The password operation failed. {message} Unlock the keyring and try saving again."));
                     error.set_visible(true);
                 }
             }
         });
     });
     if let Some(id) = profile.id {
-        let delete = gtk::Button::with_label("Удалить профиль…");
+        let delete = gtk::Button::with_label(tr!("Удалить профиль…", "Delete Profile…"));
         delete.add_css_class("destructive-action");
         footer.append(&delete);
         let weak_dialog = dialog.downgrade();
@@ -583,10 +649,10 @@ fn edit_draft(
         let delete_error = error.clone();
         delete.connect_clicked(move |button| {
             let confirm = adw::AlertDialog::builder()
-                .heading("Удалить профиль и локальный пароль?")
-                .body("Сохранённые параметры и пароль этого подключения на этом ПК будут удалены. Это действие нельзя отменить.")
+                .heading(tr!("Удалить профиль и локальный пароль?", "Delete the profile and its saved password?"))
+                .body(tr!("Сохранённые параметры и пароль этого подключения на этом ПК будут удалены. Это действие нельзя отменить.", "This removes the saved settings and password from this computer."))
                 .build();
-            confirm.add_responses(&[("cancel", "Отмена"), ("delete", "Удалить")]);
+            confirm.add_responses(&[("cancel", tr!("Отмена", "Cancel")), ("delete", tr!("Удалить", "Delete"))]);
             confirm.set_default_response(Some("cancel"));
             confirm.set_close_response("cancel");
             confirm.set_response_appearance("delete", adw::ResponseAppearance::Destructive);
@@ -599,7 +665,7 @@ fn edit_draft(
                 if response != "delete" { return; }
                 let (Some(dialog), Some(form)) = (weak_dialog.upgrade(), weak_form.upgrade()) else { return; };
                 let Some(operation) = state.operation(&uid) else {
-                    show_error(&error, "В другом окне выполняется операция с этим профилем.");
+                    show_error(&error, tr!("В другом окне выполняется операция с этим профилем.", "This profile is being updated in another window."));
                     error.set_visible(true);
                     return;
                 };
@@ -619,7 +685,7 @@ fn edit_draft(
                     match result {
                         Ok(()) => { refresh(&state); dialog.close(); }
                         Err(message) => {
-                            show_error(&error, &format!("Профиль не удалён. {message}"));
+                            show_error(&error, &tr_format!("Профиль не удалён. {message}", "Profile deletion failed. {message}"));
                             error.set_visible(true);
                         }
                     }
@@ -653,7 +719,13 @@ fn edit_draft(
                     Ok(Some(secret)) => password.set_text(&secret),
                     Ok(None) => {}
                     Err(message) => {
-                        show_error(&error, &format!("Пароль не скопирован. {message}"));
+                        show_error(
+                            &error,
+                            &tr_format!(
+                                "Пароль не скопирован. {message}",
+                                "Password copy failed. {message}"
+                            ),
+                        );
                         error.set_visible(true);
                     }
                 }

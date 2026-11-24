@@ -16,23 +16,33 @@ fn attributes(uid: &str) -> HashMap<&str, &str> {
     HashMap::from([("kind", "rdp-password"), ("uid", uid)])
 }
 
-pub const UNAVAILABLE: &str = "Не удалось обратиться к Secret Service. Проверьте, что системное хранилище паролей запущено и разблокировано. Пароль не записан в файл или SQLite.";
-
 fn explain(error: gtk::glib::Error) -> &'static str {
     use gtk::gio::{DBusError, IOErrorEnum};
     if error.matches(DBusError::ServiceUnknown) || error.matches(DBusError::NameHasNoOwner) {
-        "Secret Service недоступен: в пользовательской сессии нет службы хранения паролей."
+        tr!(
+            "Secret Service недоступен: в пользовательской сессии нет службы хранения паролей.",
+            "Secret Service is unavailable in this user session."
+        )
     } else if error.matches(libsecret::Error::IsLocked) {
-        "Системное хранилище заблокировано. Разблокируйте его и повторите сохранение."
+        tr!(
+            "Системное хранилище заблокировано. Разблокируйте его и повторите сохранение.",
+            "Unlock the system keyring and try saving again."
+        )
     } else if error.matches(IOErrorEnum::Cancelled) {
-        "Операция с хранилищем отменена. Повторите её и подтвердите системный запрос."
+        tr!(
+            "Операция с хранилищем отменена. Повторите её и подтвердите системный запрос.",
+            "Keyring operation cancelled. Try again and accept the system prompt."
+        )
     } else if error.matches(DBusError::AccessDenied) || error.matches(IOErrorEnum::PermissionDenied)
     {
-        "Secret Service отказал в доступе. Проверьте разрешения системного хранилища."
+        tr!(
+            "Secret Service отказал в доступе. Проверьте разрешения системного хранилища.",
+            "Secret Service denied access. Check the keyring permissions."
+        )
     } else if error.matches(libsecret::Error::NoSuchObject) {
-        "Коллекция паролей недоступна. Проверьте наличие хранилища по умолчанию в менеджере паролей."
+        tr!("Коллекция паролей недоступна. Проверьте наличие хранилища по умолчанию в менеджере паролей.", "The password collection is unavailable. Check the default keyring in your password manager.")
     } else {
-        UNAVAILABLE
+        tr!("Не удалось обратиться к Secret Service. Проверьте, что системное хранилище паролей запущено и разблокировано. Пароль не записан в файл или SQLite.", "Could not reach Secret Service. Check that the system keyring is running and unlocked.")
     }
 }
 
@@ -41,7 +51,10 @@ pub async fn store(uid: &str, password: &str) -> Result<(), &'static str> {
         Some(&schema()),
         attributes(uid),
         Some(libsecret::COLLECTION_DEFAULT),
-        "Linux RDP Manager — пароль подключения",
+        tr!(
+            "Linux RDP Manager — пароль подключения",
+            "Linux RDP Manager — connection password"
+        ),
         password,
     )
     .await
@@ -52,7 +65,7 @@ pub async fn store(uid: &str, password: &str) -> Result<(), &'static str> {
         .await
         .map_err(explain)?;
     if stored.as_deref() != Some(password) {
-        return Err("Хранилище не подтвердило сохранение пароля. Проверьте разблокировку и повторите попытку.");
+        return Err(tr!("Хранилище не подтвердило сохранение пароля. Проверьте разблокировку и повторите попытку.", "The keyring did not confirm saving the password. Unlock it and try again."));
     }
     Ok(())
 }
@@ -87,13 +100,19 @@ pub async fn store_webdav(uid: &str, password: &str) -> Result<(), &'static str>
         Some(&schema()),
         webdav_attributes(uid),
         Some(libsecret::COLLECTION_DEFAULT),
-        "Linux RDP Manager — пароль приложения WebDAV",
+        tr!(
+            "Linux RDP Manager — пароль приложения WebDAV",
+            "Linux RDP Manager — WebDAV app password"
+        ),
         password,
     )
     .await
     .map_err(explain)?;
     if lookup_webdav(uid).await?.as_deref().map(String::as_str) != Some(password) {
-        return Err("Хранилище не подтвердило сохранение пароля WebDAV.");
+        return Err(tr!(
+            "Хранилище не подтвердило сохранение пароля WebDAV.",
+            "The keyring did not confirm saving the WebDAV password."
+        ));
     }
     Ok(())
 }
@@ -120,13 +139,19 @@ pub async fn store_sftp(uid: &str, secret: &str) -> Result<(), &'static str> {
         Some(&schema()),
         sftp_attributes(uid),
         Some(libsecret::COLLECTION_DEFAULT),
-        "Linux RDP Manager — пароль/passphrase SFTP",
+        tr!(
+            "Linux RDP Manager — пароль/passphrase SFTP",
+            "Linux RDP Manager — SFTP password or passphrase"
+        ),
         secret,
     )
     .await
     .map_err(explain)?;
     if lookup_sftp(uid).await?.as_deref().map(String::as_str) != Some(secret) {
-        return Err("Хранилище не подтвердило сохранение секрета SFTP.");
+        return Err(tr!(
+            "Хранилище не подтвердило сохранение секрета SFTP.",
+            "The keyring did not confirm saving the SFTP credential."
+        ));
     }
     Ok(())
 }

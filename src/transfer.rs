@@ -30,7 +30,12 @@ pub fn snapshot_name(name: &str) -> bool {
 pub fn new_snapshot_name() -> Result<String> {
     let timestamp = gtk::glib::DateTime::now_utc()
         .and_then(|time| time.format("%Y%m%dT%H%M%SZ"))
-        .map_err(|_| "Не удалось определить время для имени набора.")?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось определить время для имени набора.",
+                "Could not generate the bundle timestamp."
+            )
+        })?;
     Ok(format!(
         "rdp-profiles-{timestamp}-{}.rdpm",
         gtk::glib::uuid_string_random()
@@ -42,7 +47,6 @@ pub struct Snapshot {
     pub name: String,
     pub modified: String,
 }
-const AUTH_FAILED: &str = "Неверный мастер-пароль или файл повреждён. Данные не применены.";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -99,21 +103,36 @@ struct Bundle {
 
 fn validate(profiles: &[PortableProfile]) -> Result<()> {
     if profiles.len() > 10_000 {
-        return Err("В наборе более 10000 профилей.".into());
+        return Err(tr!(
+            "В наборе более 10000 профилей.",
+            "The bundle contains more than 10,000 profiles."
+        )
+        .into());
     }
     let mut ids = HashSet::new();
     for p in profiles {
-        p.profile()
-            .validate()
-            .map_err(|_| "Набор содержит некорректный профиль.")?;
+        p.profile().validate().map_err(|_| {
+            tr!(
+                "Набор содержит некорректный профиль.",
+                "The bundle contains an invalid profile."
+            )
+        })?;
         if !ids.insert(&p.uid) {
-            return Err("В наборе повторяются идентификаторы профилей.".into());
+            return Err(tr!(
+                "В наборе повторяются идентификаторы профилей.",
+                "The bundle contains duplicate profile identifiers."
+            )
+            .into());
         }
         if [&p.uid, &p.name, &p.host, &p.username, &p.domain]
             .iter()
             .any(|s| s.len() > 4096)
         {
-            return Err("Поле профиля превышает допустимую длину.".into());
+            return Err(tr!(
+                "Поле профиля превышает допустимую длину.",
+                "A profile field is too long."
+            )
+            .into());
         }
     }
     Ok(())
@@ -121,20 +140,38 @@ fn validate(profiles: &[PortableProfile]) -> Result<()> {
 
 fn key(password: &str, salt: &[u8]) -> Result<Zeroizing<[u8; 32]>> {
     if password.is_empty() || password.len() > 1024 {
-        return Err("Введите мастер-пароль длиной до 1024 байт.".into());
+        return Err(tr!(
+            "Введите мастер-пароль длиной до 1024 байт.",
+            "Enter a master password of up to 1,024 bytes."
+        )
+        .into());
     }
     // Fixed by the authenticated format version; untrusted input cannot inflate KDF costs.
-    let params = Params::new(65536, 3, 1, Some(32)).map_err(|_| "Ошибка параметров шифрования.")?;
+    let params = Params::new(65536, 3, 1, Some(32)).map_err(|_| {
+        tr!(
+            "Ошибка параметров шифрования.",
+            "Invalid encryption parameters."
+        )
+    })?;
     let mut key = Zeroizing::new([0; 32]);
     Argon2::new(Algorithm::Argon2id, Version::V0x13, params)
         .hash_password_into(password.as_bytes(), salt, key.as_mut())
-        .map_err(|_| "Не удалось получить ключ шифрования.")?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось получить ключ шифрования.",
+                "Could not derive the encryption key."
+            )
+        })?;
     Ok(key)
 }
 
 pub fn encrypt(profiles: Vec<PortableProfile>, password: &str) -> Result<Vec<u8>> {
     if password.chars().count() < 12 {
-        return Err("Мастер-пароль должен содержать минимум 12 символов.".into());
+        return Err(tr!(
+            "Мастер-пароль должен содержать минимум 12 символов.",
+            "The master password must contain at least 12 characters."
+        )
+        .into());
     }
     validate(&profiles)?;
     let plaintext = Zeroizing::new(
@@ -142,16 +179,24 @@ pub fn encrypt(profiles: Vec<PortableProfile>, password: &str) -> Result<Vec<u8>
             version: 1,
             profiles,
         })
-        .map_err(|_| "Не удалось подготовить набор.")?,
+        .map_err(|_| {
+            tr!(
+                "Не удалось подготовить набор.",
+                "Could not prepare the bundle."
+            )
+        })?,
     );
     if plaintext.len() > MAX_BYTES - HEADER - 16 {
-        return Err("Набор превышает 4 МиБ.".into());
+        return Err(tr!("Набор превышает 4 МиБ.", "The bundle exceeds 4 MiB.").into());
     }
     let mut header = [0u8; HEADER];
     header[..8].copy_from_slice(MAGIC);
-    OsRng
-        .try_fill_bytes(&mut header[8..])
-        .map_err(|_| "Системный генератор случайных чисел недоступен.")?;
+    OsRng.try_fill_bytes(&mut header[8..]).map_err(|_| {
+        tr!(
+            "Системный генератор случайных чисел недоступен.",
+            "The system random number generator is unavailable."
+        )
+    })?;
     let key = key(password, &header[8..24])?;
     let cipher = XChaCha20Poly1305::new((&*key).into());
     let ciphertext = cipher
@@ -162,7 +207,12 @@ pub fn encrypt(profiles: Vec<PortableProfile>, password: &str) -> Result<Vec<u8>
                 aad: &header,
             },
         )
-        .map_err(|_| "Не удалось зашифровать набор.")?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось зашифровать набор.",
+                "Could not encrypt the bundle."
+            )
+        })?;
     let mut result = header.to_vec();
     result.extend(ciphertext);
     Ok(result)
@@ -170,7 +220,11 @@ pub fn encrypt(profiles: Vec<PortableProfile>, password: &str) -> Result<Vec<u8>
 
 pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<PortableProfile>> {
     if bytes.len() > MAX_BYTES || bytes.len() < HEADER + 16 || &bytes[..8] != MAGIC {
-        return Err("Неподдерживаемый формат, версия или размер файла.".into());
+        return Err(tr!(
+            "Неподдерживаемый формат, версия или размер файла.",
+            "Unsupported file format, version or size."
+        )
+        .into());
     }
     let key = key(password, &bytes[8..24])?;
     let cipher = XChaCha20Poly1305::new((&*key).into());
@@ -183,12 +237,20 @@ pub fn decrypt(bytes: &[u8], password: &str) -> Result<Vec<PortableProfile>> {
                     aad: &bytes[..HEADER],
                 },
             )
-            .map_err(|_| AUTH_FAILED)?,
+            .map_err(|_| tr!("Неверный мастер-пароль или файл повреждён. Данные не применены.", "The master password is incorrect or the bundle is corrupt. No changes were applied."))?,
     );
-    let bundle: Bundle =
-        serde_json::from_slice(&plaintext).map_err(|_| "Некорректное содержимое набора.")?;
+    let bundle: Bundle = serde_json::from_slice(&plaintext).map_err(|_| {
+        tr!(
+            "Некорректное содержимое набора.",
+            "Invalid bundle contents."
+        )
+    })?;
     if bundle.version != 1 {
-        return Err("Версия набора не поддерживается.".into());
+        return Err(tr!(
+            "Версия набора не поддерживается.",
+            "Unsupported bundle version."
+        )
+        .into());
     }
     validate(&bundle.profiles)?;
     Ok(bundle.profiles)
@@ -201,35 +263,56 @@ pub fn publish(
     password: &str,
 ) -> Result<PathBuf> {
     let data = encrypt(profiles, password)?;
-    let mut temporary = tempfile::NamedTempFile::new_in(directory)
-        .map_err(|_| "Не удалось создать файл в выбранной папке.")?;
+    let mut temporary = tempfile::NamedTempFile::new_in(directory).map_err(|_| {
+        tr!(
+            "Не удалось создать файл в выбранной папке.",
+            "Could not create a file in the selected folder."
+        )
+    })?;
     temporary
         .write_all(&data)
         .and_then(|_| temporary.as_file().sync_all())
-        .map_err(|_| "Не удалось записать зашифрованный файл.")?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось записать зашифрованный файл.",
+                "Could not write the encrypted file."
+            )
+        })?;
     let path = directory.join(format!(
         "rdp-profiles-{}.rdpm",
         gtk::glib::uuid_string_random()
     ));
-    temporary
-        .persist_noclobber(&path)
-        .map_err(|_| "Не удалось опубликовать набор. Существующие файлы не заменены.")?;
+    temporary.persist_noclobber(&path).map_err(|_| {
+        tr!(
+            "Не удалось опубликовать набор. Существующие файлы не заменены.",
+            "Could not publish the bundle. Existing files were retained."
+        )
+    })?;
     Ok(path)
 }
 
 pub fn read(path: &Path, password: &str) -> Result<Vec<PortableProfile>> {
-    let file = File::open(path).map_err(|_| "Не удалось открыть выбранный файл.")?;
+    let file = File::open(path).map_err(|_| {
+        tr!(
+            "Не удалось открыть выбранный файл.",
+            "Could not open the selected file."
+        )
+    })?;
     if !file
         .metadata()
-        .map_err(|_| "Не удалось проверить файл.")?
+        .map_err(|_| tr!("Не удалось проверить файл.", "Could not inspect the file."))?
         .is_file()
     {
-        return Err("Выберите обычный файл набора.".into());
+        return Err(tr!(
+            "Выберите обычный файл набора.",
+            "Select a regular bundle file."
+        )
+        .into());
     }
     let mut bytes = Vec::new();
     file.take((MAX_BYTES + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Не удалось прочитать набор.")?;
+        .map_err(|_| tr!("Не удалось прочитать набор.", "Could not read the bundle."))?;
     decrypt(&bytes, password)
 }
 

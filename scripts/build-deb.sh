@@ -10,7 +10,7 @@ export CARGO_TARGET_DIR="$root/target/h264"
 cargo build --release --locked
 version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -1)
 test -n "$version"
-version="$version-18"
+version="$version-19"
 out="$root/target/dist"
 mkdir -p "$out"
 work=$(mktemp -d "$out/deb.XXXXXXXX")

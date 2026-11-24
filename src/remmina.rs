@@ -6,9 +6,14 @@ use std::net::Ipv6Addr;
 pub fn parse(data: &str) -> Result<(Profile, String)> {
     let file = KeyFile::new();
     file.load_from_data(data.trim_start_matches('\u{feff}'), KeyFileFlags::NONE)
-        .map_err(|_| "Некорректный формат файла Remmina.")?;
+        .map_err(|_| {
+            tr!(
+                "Некорректный формат файла Remmina.",
+                "Invalid Remmina file format."
+            )
+        })?;
     if !file.has_group("remmina") {
-        return Err("Нет секции [remmina].".into());
+        return Err(tr!("Нет секции [remmina].", "Missing [remmina] section.").into());
     }
     let field = |key: &str| -> Result<String> {
         if !file.has_key("remmina", key).unwrap_or(false) {
@@ -16,10 +21,20 @@ pub fn parse(data: &str) -> Result<(Profile, String)> {
         }
         file.string("remmina", key)
             .map(|s| s.trim().to_string())
-            .map_err(|_| "Не удалось прочитать поле профиля.".into())
+            .map_err(|_| {
+                tr!(
+                    "Не удалось прочитать поле профиля.",
+                    "Could not read a profile field."
+                )
+                .into()
+            })
     };
     if !field("protocol")?.eq_ignore_ascii_case("RDP") {
-        return Err("Пропущен профиль: поддерживается только протокол RDP.".into());
+        return Err(tr!(
+            "Пропущен профиль: поддерживается только протокол RDP.",
+            "Profile skipped: only RDP is supported."
+        )
+        .into());
     }
     let server = field("server")?;
     let (host, port) = endpoint(&server)?;
@@ -45,26 +60,36 @@ fn endpoint(server: &str) -> Result<(String, u16)> {
         port.parse::<u16>()
             .ok()
             .filter(|port| *port > 0)
-            .ok_or_else(|| "Некорректный порт в поле server.".into())
+            .ok_or_else(|| {
+                tr!(
+                    "Некорректный порт в поле server.",
+                    "Invalid port in the server field."
+                )
+                .into()
+            })
     };
     if let Some(rest) = server.strip_prefix('[') {
-        let (host, suffix) = rest.split_once(']').ok_or("Некорректный IPv6-адрес.")?;
+        let (host, suffix) = rest
+            .split_once(']')
+            .ok_or(tr!("Некорректный IPv6-адрес.", "Invalid IPv6 address."))?;
         host.parse::<Ipv6Addr>()
-            .map_err(|_| "Некорректный IPv6-адрес.")?;
+            .map_err(|_| tr!("Некорректный IPv6-адрес.", "Invalid IPv6 address."))?;
         let port = if suffix.is_empty() {
             3389
         } else {
-            parse_port(
-                suffix
-                    .strip_prefix(':')
-                    .ok_or("Некорректный адрес сервера.")?,
-            )?
+            parse_port(suffix.strip_prefix(':').ok_or(tr!(
+                "Некорректный адрес сервера.",
+                "Invalid server address."
+            ))?)?
         };
         Ok((host.into(), port))
     } else if server.matches(':').count() > 1 {
-        server
-            .parse::<Ipv6Addr>()
-            .map_err(|_| "Некорректный IPv6-адрес. Для порта используйте [IPv6]:порт.")?;
+        server.parse::<Ipv6Addr>().map_err(|_| {
+            tr!(
+                "Некорректный IPv6-адрес. Для порта используйте [IPv6]:порт.",
+                "Invalid IPv6 address. To include a port, use [IPv6]:port."
+            )
+        })?;
         Ok((server.into(), 3389))
     } else if let Some((host, port)) = server.split_once(':') {
         Ok((host.into(), parse_port(port)?))

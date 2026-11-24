@@ -495,16 +495,23 @@ pub fn start(config: Config) -> Result<(Arc<Control>, Receiver<Event>), String> 
             let (code, message) = if worker.overflow.load(Ordering::Acquire) {
                 (
                     0xFFFF_FFFE,
-                    "Сеанс остановлен: переполнена очередь ввода.".into(),
+                    tr!(
+                        "Сеанс остановлен: переполнена очередь ввода.",
+                        "Session stopped: the input queue is full."
+                    )
+                    .into(),
                 )
             } else {
                 match result {
                     Ok(code) => (
                         code,
                         if code == 0 {
-                            "Сеанс завершён".into()
+                            tr!("Сеанс завершён", "Session ended").into()
                         } else {
-                            format!("RDP завершён с кодом 0x{code:08X}")
+                            tr_format!(
+                                "RDP завершён с кодом 0x{code:08X}",
+                                "RDP ended with code 0x{code:08X}"
+                            )
                         },
                     ),
                     Err(error) => (error.code, error.message),
@@ -516,7 +523,13 @@ pub fn start(config: Config) -> Result<(Arc<Control>, Receiver<Event>), String> 
                 cancelled,
             });
         })
-        .map_err(|_| "Не удалось запустить поток RDP.".to_string())?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось запустить поток RDP.",
+                "Could not start the RDP worker."
+            )
+            .to_string()
+        })?;
     Ok((control, rx))
 }
 
@@ -541,15 +554,26 @@ fn run(
 ) -> Result<u32, RunFailure> {
     static INITIALIZED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     if !*INITIALIZED.get_or_init(|| unsafe { rdp_manager_initialize() != 0 }) {
-        return Err("Не удалось инициализировать FreeRDP/WinPR SSL.".into());
+        return Err(tr!(
+            "Не удалось инициализировать FreeRDP/WinPR SSL.",
+            "Could not initialize FreeRDP/WinPR SSL."
+        )
+        .into());
     }
-    let host = CString::new(config.host).map_err(|_| "Некорректный адрес сервера.")?;
-    let user = CString::new(config.username).map_err(|_| "Некорректный пользователь.")?;
-    let domain = CString::new(config.domain).map_err(|_| "Некорректный домен.")?;
-    let shared_folder =
-        CString::new(config.shared_folder).map_err(|_| "Некорректная общая папка.")?;
-    let pass = CString::new(config.password.as_str())
-        .map_err(|_| "Пароль содержит недопустимый символ.")?;
+    let host = CString::new(config.host)
+        .map_err(|_| tr!("Некорректный адрес сервера.", "Invalid server address."))?;
+    let user = CString::new(config.username)
+        .map_err(|_| tr!("Некорректный пользователь.", "Invalid username."))?;
+    let domain =
+        CString::new(config.domain).map_err(|_| tr!("Некорректный домен.", "Invalid domain."))?;
+    let shared_folder = CString::new(config.shared_folder)
+        .map_err(|_| tr!("Некорректная общая папка.", "Invalid shared folder."))?;
+    let pass = CString::new(config.password.as_str()).map_err(|_| {
+        tr!(
+            "Пароль содержит недопустимый символ.",
+            "The password contains an invalid character."
+        )
+    })?;
     let native = unsafe {
         rdp_manager_new(
             host.as_ptr(),
@@ -572,10 +596,17 @@ fn run(
     temporary.zeroize();
     drop(config.password);
     if native.is_null() {
-        return Err("Не удалось подготовить native FreeRDP frontend.".into());
+        return Err(tr!(
+            "Не удалось подготовить native FreeRDP frontend.",
+            "Could not initialize the FreeRDP client."
+        )
+        .into());
     }
     {
-        let mut handle = control.native.lock().map_err(|_| "Ошибка состояния RDP.")?;
+        let mut handle = control
+            .native
+            .lock()
+            .map_err(|_| tr!("Ошибка состояния RDP.", "Invalid RDP state."))?;
         *handle = Some(native as usize);
         if control.stopped.load(Ordering::Acquire) {
             unsafe {
@@ -702,7 +733,7 @@ fn run(
         rdp_manager_free(native);
     }
     if !connected && !control.stopped.load(Ordering::Acquire) {
-        return Err(RunFailure{code,message:format!("Не удалось подключиться: {name} (0x{code:08X}). Проверьте сервер, сертификат и учётные данные.")});
+        return Err(RunFailure{code,message:tr_format!("Не удалось подключиться: {name} (0x{code:08X}). Проверьте сервер, сертификат и учётные данные.", "Connection failed: {name} (0x{code:08X}). Check the server, certificate and credentials.")});
     }
     Ok(code)
 }

@@ -165,14 +165,14 @@ fn create_session_window(
     let header = adw::HeaderBar::new();
     let toggle = gtk::ToggleButton::builder()
         .icon_name("sidebar-show-symbolic")
-        .tooltip_text("Показать профили")
+        .tooltip_text(tr!("Показать профили", "Show profiles"))
         .active(true)
         .build();
-    let detach = gtk::Button::with_label("В отдельное окно");
+    let detach = gtk::Button::with_label(tr!("В отдельное окно", "Move to New Window"));
     header.pack_start(&toggle);
     header.pack_end(&detach);
     let return_tab = origin.as_ref().map(|_| {
-        let button = gtk::Button::with_label("Вернуть вкладку");
+        let button = gtk::Button::with_label(tr!("Вернуть вкладку", "Return Tab"));
         header.pack_end(&button);
         button
     });
@@ -196,7 +196,7 @@ fn create_session_window(
     sidebar.set_margin_end(16);
     let sidebar_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let title = gtk::Label::builder()
-        .label("Подключения")
+        .label(tr!("Подключения", "Connections"))
         .xalign(0.0)
         .hexpand(true)
         .build();
@@ -204,45 +204,86 @@ fn create_session_window(
     let menu = gtk::gio::Menu::new();
     let import_menu = gtk::gio::Menu::new();
     import_menu.append(
-        Some("Найти подключения Remmina"),
+        Some(tr!("Найти подключения Remmina", "Find Remmina Profiles")),
         Some("win.discover-remmina"),
     );
     import_menu.append(
-        Some("Выбрать каталог…"),
+        Some(tr!("Выбрать каталог…", "Choose Folder…")),
         Some("win.import-remmina-directory"),
     );
-    import_menu.append(Some("Выбрать файлы…"), Some("win.import-remmina"));
-    menu.append_submenu(Some("Импорт Remmina"), &import_menu);
+    import_menu.append(
+        Some(tr!("Выбрать файлы…", "Choose Files…")),
+        Some("win.import-remmina"),
+    );
+    menu.append_submenu(
+        Some(tr!("Импорт Remmina", "Import from Remmina")),
+        &import_menu,
+    );
     let sync_menu = gtk::gio::Menu::new();
-    sync_menu.append(Some("Через папку…"), Some("win.transfer-profiles"));
-    sync_menu.append(Some("Через WebDAV / Nextcloud…"), Some("win.webdav"));
-    sync_menu.append(Some("Через SFTP / SSH…"), Some("win.sftp"));
-    menu.append_submenu(Some("Синхронизация подключений"), &sync_menu);
-    menu.append(Some("История подключений…"), Some("win.history"));
+    sync_menu.append(
+        Some(tr!("Через папку…", "Folder…")),
+        Some("win.transfer-profiles"),
+    );
+    sync_menu.append(
+        Some(tr!("Через WebDAV / Nextcloud…", "WebDAV / Nextcloud…")),
+        Some("win.webdav"),
+    );
+    sync_menu.append(
+        Some(tr!("Через SFTP / SSH…", "SFTP / SSH…")),
+        Some("win.sftp"),
+    );
+    menu.append_submenu(
+        Some(tr!("Синхронизация подключений", "Profile Sync")),
+        &sync_menu,
+    );
+    menu.append(
+        Some(tr!("История подключений…", "Connection History…")),
+        Some("win.history"),
+    );
     let sort_menu = gtk::gio::Menu::new();
     sort_menu.append(
-        Some("Часто используемые"),
+        Some(tr!("Часто используемые", "Most Used")),
         Some("win.sort-profiles::frequent"),
     );
-    sort_menu.append(Some("По алфавиту"), Some("win.sort-profiles::alphabetical"));
-    menu.append_submenu(Some("Сортировка подключений"), &sort_menu);
+    sort_menu.append(
+        Some(tr!("По алфавиту", "Alphabetical")),
+        Some("win.sort-profiles::alphabetical"),
+    );
+    menu.append_submenu(
+        Some(tr!("Сортировка подключений", "Sort Connections")),
+        &sort_menu,
+    );
     let theme_menu = gtk::gio::Menu::new();
-    theme_menu.append(Some("Системная"), Some("app.theme::system"));
-    theme_menu.append(Some("Светлая"), Some("app.theme::light"));
-    theme_menu.append(Some("Тёмная"), Some("app.theme::dark"));
-    menu.append_submenu(Some("Тема оформления"), &theme_menu);
+    theme_menu.append(
+        Some(tr!("Системная", "System Default")),
+        Some("app.theme::system"),
+    );
+    theme_menu.append(Some(tr!("Светлая", "Light")), Some("app.theme::light"));
+    theme_menu.append(Some(tr!("Тёмная", "Dark")), Some("app.theme::dark"));
+    menu.append_submenu(Some(tr!("Тема оформления", "Appearance")), &theme_menu);
+    let language = gtk::gio::Menu::new();
+    language.append(
+        Some(tr!("Системный", "System default")),
+        Some("app.language::system"),
+    );
+    language.append(Some("English"), Some("app.language::en"));
+    language.append(Some("Русский"), Some("app.language::ru"));
+    menu.append_submenu(
+        Some(tr!("Язык интерфейса", "Interface language")),
+        &language,
+    );
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text("Дополнительные действия")
+        .tooltip_text(tr!("Дополнительные действия", "More Actions"))
         .menu_model(&menu)
         .build();
     more.add_css_class("flat");
     sidebar_header.append(&more);
     sidebar.append(&sidebar_header);
-    let new_profile = gtk::Button::with_label("Новое подключение");
+    let new_profile = gtk::Button::with_label(tr!("Новое подключение", "New Connection"));
     sidebar.append(&new_profile);
     let search = gtk::SearchEntry::builder()
-        .placeholder_text("Поиск подключений")
+        .placeholder_text(tr!("Поиск подключений", "Search Connections"))
         .build();
     sidebar.append(&search);
     let transfer = gtk::gio::SimpleAction::new("transfer-profiles", None);
@@ -435,8 +476,11 @@ fn create_session_window(
     content.append(&bar);
     let empty = adw::StatusPage::builder()
         .icon_name("network-server-symbolic")
-        .title("Нет открытых подключений")
-        .description("Выберите подключение в боковой панели.")
+        .title(tr!("Нет открытых подключений", "No Open Connections"))
+        .description(tr!(
+            "Выберите подключение в боковой панели.",
+            "Choose a connection in the sidebar."
+        ))
         .vexpand(true)
         .build();
     content.append(&tabs);

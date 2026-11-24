@@ -1,3 +1,5 @@
+#[macro_use]
+mod i18n;
 mod clipboard_files;
 mod import_ui;
 mod profiles_ui;
@@ -61,7 +63,13 @@ fn install_theme_action(app: &adw::Application) {
             Ok(())
         };
         if let Err(error) = save() {
-            eprintln!("Не удалось сохранить тему: {error}");
+            eprintln!(
+                "{}",
+                tr_format!(
+                    "Не удалось сохранить тему: {error}",
+                    "Could not save theme: {error}"
+                )
+            );
         }
     });
     app.add_action(&action);
@@ -75,6 +83,7 @@ fn main() -> gtk::glib::ExitCode {
     let app = adw::Application::builder().application_id(APP_ID).build();
     app.connect_startup(|app| {
         install_theme_action(app);
+        i18n::install_action(app);
         if let (Some(display), Some(path)) = (
             gtk::gdk::Display::default(),
             std::env::var_os("RDP_MANAGER_ICON_PATH"),
@@ -97,7 +106,10 @@ fn main() -> gtk::glib::ExitCode {
                         .default_height(300)
                         .build();
                     let status = adw::StatusPage::builder()
-                        .title("Не удалось открыть базу данных")
+                        .title(tr!(
+                            "Не удалось открыть базу данных",
+                            "Could not open the database"
+                        ))
                         .description(error.to_string())
                         .build();
                     window.set_content(Some(&status));

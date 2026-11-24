@@ -72,18 +72,18 @@ impl FileRelay {
                 let value = clipboard
                     .read_value_future(gdk::FileList::static_type(), glib::Priority::DEFAULT)
                     .await
-                    .map_err(|_| "Не удалось прочитать список файлов.")?;
+                    .map_err(|_| tr!("Не удалось прочитать список файлов.", "Could not read the file list."))?;
                 let files = value
                     .get::<gdk::FileList>()
-                    .map_err(|_| "Не удалось прочитать список файлов.")?;
+                    .map_err(|_| tr!("Не удалось прочитать список файлов.", "Could not read the file list."))?;
                 let paths: Option<Vec<_>> = files.files().iter().map(|file| file.path()).collect();
-                let paths = paths.ok_or("Исходные файлы недоступны.")?;
+                let paths = paths.ok_or(tr!("Исходные файлы недоступны.", "The source files are unavailable."))?;
                 if clipboard.content().as_ref() != Some(&provider) {
-                    return Err("Буфер обмена изменился.");
+                    return Err(tr!("Буфер обмена изменился.", "The clipboard changed."));
                 }
                 gtk::gio::spawn_blocking(move || clipboard_files::snapshot(&paths))
                     .await
-                    .map_err(|_| "Не удалось прочитать список файлов.")?
+                    .map_err(|_| tr!("Не удалось прочитать список файлов.", "Could not read the file list."))?
             }
             .await;
             if relay.provider.borrow().as_ref() != Some(&provider) {
@@ -94,7 +94,7 @@ impl FileRelay {
                     if clipboard.content().as_ref() != Some(&provider) {
                         message(
                             &status,
-                            "Копирование отменено: буфер обмена изменился.",
+                            tr!("Копирование отменено: буфер обмена изменился.", "Copy cancelled because the clipboard changed."),
                             false,
                         );
                     } else {
@@ -103,7 +103,7 @@ impl FileRelay {
                                 sender.clipboard_files(entries);
                                 message(
                                     &status,
-                                    "Файлы в буфере. Нажмите Ctrl+V для передачи.",
+                                    tr!("Файлы в буфере. Нажмите Ctrl+V для передачи.", "Files are on the clipboard. Press Ctrl+V to transfer them."),
                                     true,
                                 );
                                 return;
@@ -233,15 +233,26 @@ fn connect_saved(
             .profiles()?
             .into_iter()
             .find(|p| p.uid == uid)
-            .ok_or("Подключение удалено")?;
+            .ok_or(tr!(
+                "Подключение удалено",
+                "The connection profile was deleted"
+            ))?;
         let options = state.store.session_options(uid)?;
         let shared_folder = if options.shared_folder.is_empty() {
             String::new()
         } else {
-            let path = std::fs::canonicalize(&options.shared_folder)
-                .map_err(|_| "Общая папка недоступна. Проверьте путь в настройках профиля.")?;
+            let path = std::fs::canonicalize(&options.shared_folder).map_err(|_| {
+                tr!(
+                    "Общая папка недоступна. Проверьте путь в настройках профиля.",
+                    "The shared folder is unavailable. Check its path in the profile."
+                )
+            })?;
             if !path.is_dir() {
-                return Err("Общая папка должна быть каталогом.".into());
+                return Err(tr!(
+                    "Общая папка должна быть каталогом.",
+                    "The shared folder must be a directory."
+                )
+                .into());
             }
             path.to_string_lossy().into_owned()
         };
@@ -272,10 +283,10 @@ fn connect_saved(
         Ok((profile, config)) => open(tabs, state, profile, config),
         Err(error) => {
             let alert = adw::AlertDialog::builder()
-                .heading("Не удалось подключиться")
+                .heading(tr!("Не удалось подключиться", "Could not connect"))
                 .body(error.to_string())
                 .build();
-            alert.add_response("close", "Закрыть");
+            alert.add_response("close", tr!("Закрыть", "Close"));
             alert.present(Some(parent));
         }
     }
@@ -303,25 +314,32 @@ pub fn connect(
             return;
         }
         let account = if profile.username.is_empty() {
-            "Не указан в профиле".to_owned()
+            tr!("Не указан в профиле", "Not set in the profile").to_owned()
         } else if profile.domain.is_empty() {
             profile.username.clone()
         } else {
             format!("{}\\{}", profile.domain, profile.username)
         };
         let prompt = adw::AlertDialog::builder()
-            .heading(format!("Пароль: {}", profile.name))
-            .body(format!(
-                "Пользователь: {account}\nВведите пароль для подключения."
+            .heading(tr_format!("Пароль: {}", "Password: {}", profile.name))
+            .body(tr_format!(
+                "Пользователь: {account}\nВведите пароль для подключения.",
+                "Username: {account}\nEnter the connection password."
             ))
             .build();
         let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
         let password = gtk::PasswordEntry::builder().show_peek_icon(true).build();
-        let remember = gtk::CheckButton::with_label("Сохранить пароль на этом ПК");
+        let remember = gtk::CheckButton::with_label(tr!(
+            "Сохранить пароль на этом ПК",
+            "Save password on this computer"
+        ));
         fields.append(&password);
         fields.append(&remember);
         prompt.set_extra_child(Some(&fields));
-        prompt.add_responses(&[("cancel", "Отмена"), ("connect", "Подключиться")]);
+        prompt.add_responses(&[
+            ("cancel", tr!("Отмена", "Cancel")),
+            ("connect", tr!("Подключиться", "Connect")),
+        ]);
         prompt.set_close_response("cancel");
         prompt.set_default_response(Some("connect"));
         let weak_parent = parent.downgrade();
@@ -355,10 +373,10 @@ pub fn connect(
                     if let Err(error) = secrets::store(&uid, &secret).await {
                         if let Some(parent) = weak_parent.upgrade() {
                             let alert = adw::AlertDialog::builder()
-                                .heading("Пароль не сохранён")
+                                .heading(tr!("Пароль не сохранён", "Password was not saved"))
                                 .body(error)
                                 .build();
-                            alert.add_response("close", "Закрыть");
+                            alert.add_response("close", tr!("Закрыть", "Close"));
                             alert.present(Some(&parent));
                         }
                         return;
@@ -394,7 +412,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     toolbar.set_margin_start(12);
     toolbar.set_margin_end(12);
     let status = gtk::Label::builder()
-        .label("Подключение…")
+        .label(tr!("Подключение…", "Connecting…"))
         .hexpand(true)
         .xalign(0.0)
         .wrap(true)
@@ -403,13 +421,16 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let cad = gtk::Button::with_label("Ctrl+Alt+Del");
     cad.set_sensitive(false);
     toolbar.append(&cad);
-    let capture = gtk::ToggleButton::with_label("Захват клавиш");
-    capture.set_tooltip_text(Some("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора."));
+    let capture = gtk::ToggleButton::with_label(tr!("Захват клавиш", "Capture Keyboard"));
+    capture.set_tooltip_text(Some(tr!("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора.", "Send system shortcuts to the remote desktop. Right Ctrl releases the keyboard. On Wayland this requires compositor support.")));
     capture.set_focus_on_click(false);
     capture.set_sensitive(false);
     toolbar.append(&capture);
     let fullscreen = gtk::Button::from_icon_name("view-fullscreen-symbolic");
-    fullscreen.set_tooltip_text(Some("Полный экран / выход (Ctrl+Shift+F11)"));
+    fullscreen.set_tooltip_text(Some(tr!(
+        "Полный экран / выход (Ctrl+Shift+F11)",
+        "Toggle Full Screen (Ctrl+Shift+F11)"
+    )));
     fullscreen.set_focus_on_click(false);
     fullscreen.connect_clicked(toggle_fullscreen);
     toolbar.append(&fullscreen);
@@ -429,10 +450,19 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                 let (icon, tooltip) = if window.is_fullscreen() {
                     (
                         "view-restore-symbolic",
-                        "Выйти из полного экрана (Ctrl+Shift+F11)",
+                        tr!(
+                            "Выйти из полного экрана (Ctrl+Shift+F11)",
+                            "Exit Full Screen (Ctrl+Shift+F11)"
+                        ),
                     )
                 } else {
-                    ("view-fullscreen-symbolic", "Полный экран (Ctrl+Shift+F11)")
+                    (
+                        "view-fullscreen-symbolic",
+                        tr!(
+                            "Полный экран (Ctrl+Shift+F11)",
+                            "Full Screen (Ctrl+Shift+F11)"
+                        ),
+                    )
                 };
                 button.set_icon_name(icon);
                 button.set_tooltip_text(Some(tooltip));
@@ -471,21 +501,24 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     });
     root.add_controller(fullscreen_keys);
 
-    let text_mode = gtk::CheckButton::with_label("Текст Unicode по локальной раскладке");
-    let keyboard_mode = gtk::Label::new(Some("Раскладка: сервер"));
+    let text_mode = gtk::CheckButton::with_label(tr!(
+        "Текст Unicode по локальной раскладке",
+        "Unicode input from the local layout"
+    ));
+    let keyboard_mode = gtk::Label::new(Some(tr!("Раскладка: сервер", "Layout: Remote")));
     keyboard_mode.add_css_class("dim-label");
     toolbar.append(&keyboard_mode);
     text_mode.connect_toggled(move |button| {
         keyboard_mode.set_label(if button.is_active() {
-            "Раскладка: локальная"
+            tr!("Раскладка: локальная", "Layout: Local")
         } else {
-            "Раскладка: сервер"
+            tr!("Раскладка: сервер", "Layout: Remote")
         });
     });
-    text_mode.set_tooltip_text(Some("Передача текста по локальной раскладке. Для xrdp оставьте выключенным и переключайте раскладку на удалённом ПК."));
+    text_mode.set_tooltip_text(Some(tr!("Передача текста по локальной раскладке. Для xrdp оставьте выключенным и переключайте раскладку на удалённом ПК.", "Send text based on the local layout. For xrdp, switch layouts on the remote desktop with this option off.")));
     let options = gtk::MenuButton::builder()
         .icon_name("open-menu-symbolic")
-        .tooltip_text("Параметры ввода")
+        .tooltip_text(tr!("Параметры ввода", "Input Options"))
         .build();
     let popover = gtk::Popover::new();
     let options_box = gtk::Box::new(gtk::Orientation::Vertical, 8);
@@ -497,7 +530,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     popover.set_child(Some(&options_box));
     options.set_popover(Some(&popover));
     toolbar.append(&options);
-    let disconnect = gtk::Button::with_label("Отключить");
+    let disconnect = gtk::Button::with_label(tr!("Отключить", "Disconnect"));
     toolbar.append(&disconnect);
     root.append(&toolbar);
     let picture = gtk::Picture::builder()
@@ -516,7 +549,14 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let history = match state.store.history_start(&profile) {
         Ok(id) => Some(id),
         Err(_) => {
-            message(&status, "Подключение… (историю записать не удалось)", false);
+            message(
+                &status,
+                tr!(
+                    "Подключение… (историю записать не удалось)",
+                    "Connecting… (could not write history)"
+                ),
+                false,
+            );
             None
         }
     };
@@ -551,7 +591,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                 }
             }
             if let (Some(state), Some(id)) = (weak_state.upgrade(), history) {
-                let _ = state.store.history_finish(id, "Закрыто пользователем", 0);
+                let _ = state.store.history_finish(
+                    id,
+                    tr!("Закрыто пользователем", "Closed by user"),
+                    0,
+                );
             }
         }),
     );
@@ -601,16 +645,20 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
             clipboard_on_close.disconnect(handler);
         }
     });
-    options_box.append(&gtk::Label::new(Some("Переключить раскладку на сервере")));
+    options_box.append(&gtk::Label::new(Some(tr!(
+        "Переключить раскладку на сервере",
+        "Switch the remote keyboard layout"
+    ))));
     for (label, codes) in [
         ("Alt+Shift", vec![56, 42]),
         ("Ctrl+Shift", vec![29, 42]),
         ("Win+Space", vec![0x15b, 57]),
     ] {
         let button = gtk::Button::with_label(label);
-        button.set_tooltip_text(Some(
+        button.set_tooltip_text(Some(tr!(
             "Сработает, если это сочетание настроено на удалённом ПК",
-        ));
+            "Requires this shortcut to be configured on the remote desktop"
+        )));
         let sender = control.clone();
         let weak_picture = picture.downgrade();
         let weak_popover = popover.downgrade();
@@ -625,10 +673,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         });
         options_box.append(&button);
     }
-    let test_text = gtk::Button::with_label("Отправить «Привет»");
-    test_text.set_tooltip_text(Some(
+    let test_text = gtk::Button::with_label(tr!("Отправить «Привет»", "Send “Hello”"));
+    test_text.set_tooltip_text(Some(tr!(
         "Проверка Unicode: заранее откройте текстовый редактор на удалённом ПК",
-    ));
+        "Open a text editor on the remote desktop to test Unicode input"
+    )));
     let sender = control.clone();
     let weak_picture = picture.downgrade();
     let weak_popover = popover.downgrade();
@@ -639,7 +688,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         if let Some(picture) = weak_picture.upgrade() {
             picture.grab_focus();
         }
-        sender.send_text("Привет");
+        sender.send_text(tr!("Привет", "Hello"));
     });
     options_box.append(&test_text);
     let sender = control.clone();
@@ -669,9 +718,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     root.connect_destroy(move |_| {
         sender.stop();
         if let Some(id) = history {
-            let _ = state_on_close
-                .store
-                .history_finish(id, "Закрыто пользователем", 0);
+            let _ = state_on_close.store.history_finish(
+                id,
+                tr!("Закрыто пользователем", "Closed by user"),
+                0,
+            );
         }
     });
     let weak_root = root.downgrade();
@@ -764,22 +815,26 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
             let (bytes, complete) = current;
             if current != previous && picture.is_sensitive() {
                 if complete {
-                    message(&status, "Файлы переданы", true);
+                    message(&status, tr!("Файлы переданы", "Files transferred"), true);
                 } else if bytes > 0 {
                     message(
                         &status,
-                        &format!("Файлы: отправлено {:.2} МиБ", bytes as f64 / 1_048_576.0),
+                        &tr_format!(
+                            "Файлы: отправлено {:.2} МиБ",
+                            "Files: {:.2} MiB sent",
+                            bytes as f64 / 1_048_576.0
+                        ),
                         true,
                     );
                 } else {
-                    message(&status, "Подключено", true);
+                    message(&status, tr!("Подключено", "Connected"), true);
                 }
             }
         }
         while let Ok(event) = events.try_recv() {
             match event {
                 Event::Connected => {
-                    message(&status, "Подключено", true);
+                    message(&status, tr!("Подключено", "Connected"), true);
                     picture.set_sensitive(true);
                     cad.set_sensitive(true);
                     picture.grab_focus();
@@ -855,22 +910,30 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                         changed_certificate.set(true);
                         message(
                             &status,
-                            "Сертификат RDP-сервера изменился. Подключение отклонено.",
+                            tr!(
+                                "Сертификат RDP-сервера изменился. Подключение отклонено.",
+                                "The RDP server certificate changed. The connection was rejected."
+                            ),
                             false,
                         );
-                        let alert=adw::AlertDialog::builder().heading("Сертификат сервера изменился")
-                        .body(format!("{}:{}\nПредыдущий отпечаток: {}\nНовый отпечаток: {}\nПодключение остановлено. Проверьте замену сертификата у администратора.",cert.host,cert.port,cert.old_fingerprint,cert.fingerprint)).build();
-                        alert.add_response("close", "Закрыть");
+                        let alert=adw::AlertDialog::builder().heading(tr!("Сертификат сервера изменился", "Server Certificate Changed"))
+                        .body(tr_format!("{}:{}\nПредыдущий отпечаток: {}\nНовый отпечаток: {}\nПодключение остановлено. Проверьте замену сертификата у администратора.", "{}:{}\nPrevious fingerprint: {}\nNew fingerprint: {}\nThe connection was stopped. Verify the certificate change with your administrator.",cert.host,cert.port,cert.old_fingerprint,cert.fingerprint)).build();
+                        alert.add_response("close", tr!("Закрыть", "Close"));
                         alert.present(Some(&root));
                         let _ = reply.send(CertificateDecision::Reject);
                     } else {
-                        let alert=adw::AlertDialog::builder().heading("Проверьте сертификат RDP-сервера")
-                        .body(format!("{}:{}\nИмя: {}\nСубъект: {}\nИздатель: {}\nSHA256: {}\n\nСверьте отпечаток с администратором. Разрешить подключение?",cert.host,cert.port,cert.common,cert.subject,cert.issuer,cert.fingerprint)).build();
-                        alert.add_responses(&[("cancel", "Отмена"), ("accept", "Подключиться")]);
+                        let alert=adw::AlertDialog::builder().heading(tr!("Проверьте сертификат RDP-сервера", "Verify the RDP Server Certificate"))
+                        .body(tr_format!("{}:{}\nИмя: {}\nСубъект: {}\nИздатель: {}\nSHA256: {}\n\nСверьте отпечаток с администратором. Разрешить подключение?", "{}:{}\nName: {}\nSubject: {}\nIssuer: {}\nSHA256: {}\n\nVerify the fingerprint with your administrator. Allow the connection?",cert.host,cert.port,cert.common,cert.subject,cert.issuer,cert.fingerprint)).build();
+                        alert.add_responses(&[
+                            ("cancel", tr!("Отмена", "Cancel")),
+                            ("accept", tr!("Подключиться", "Connect")),
+                        ]);
                         alert.set_default_response(Some("cancel"));
                         alert.set_close_response("cancel");
-                        let remember =
-                            gtk::CheckButton::with_label("Запомнить сертификат для этого сервера");
+                        let remember = gtk::CheckButton::with_label(tr!(
+                            "Запомнить сертификат для этого сервера",
+                            "Remember this server certificate"
+                        ));
                         alert.set_extra_child(Some(&remember));
                         alert.connect_response(None, move |_, response| {
                             let decision = if response != "accept" {
@@ -895,16 +958,20 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                         alert.close();
                     }
                     let text = if changed_certificate.get() {
-                        "Подключение отклонено: сертификат RDP-сервера изменился".to_string()
+                        tr!(
+                            "Подключение отклонено: сертификат RDP-сервера изменился",
+                            "Connection rejected: the RDP server certificate changed"
+                        )
+                        .to_string()
                     } else if cancelled {
-                        "Отключено пользователем".to_string()
+                        tr!("Отключено пользователем", "Disconnected by user").to_string()
                     } else {
                         text
                     };
                     message(
                         &status,
                         &text,
-                        cancelled || (code == 0 && text == "Сеанс завершён"),
+                        cancelled || (code == 0 && text == tr!("Сеанс завершён", "Session ended")),
                     );
                     disconnect.set_sensitive(false);
                     cad.set_sensitive(false);
@@ -914,7 +981,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     picture.set_paintable(None::<&gdk::Paintable>);
                     picture.set_sensitive(false);
                     if let Some(page) = weak_page.upgrade() {
-                        page.set_title(&format!("{} — завершён", profile.name));
+                        page.set_title(&tr_format!("{} — завершён", "{} — ended", profile.name));
                     }
                     if let Some(id) = history {
                         let _ = state.store.history_finish(id, &text, code);
@@ -929,7 +996,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
 
 pub fn history(parent: &adw::ApplicationWindow, state: Rc<State>) {
     let dialog = adw::Dialog::builder()
-        .title("История подключений")
+        .title(tr!("История подключений", "Connection History"))
         .content_width(700)
         .content_height(600)
         .build();
@@ -940,9 +1007,10 @@ pub fn history(parent: &adw::ApplicationWindow, state: Rc<State>) {
     list.set_valign(gtk::Align::Start);
     list.add_css_class("boxed-list");
     match state.store.history() {
-        Ok(entries) if entries.is_empty() => {
-            list.append(&gtk::Label::new(Some("История пока пуста")))
-        }
+        Ok(entries) if entries.is_empty() => list.append(&gtk::Label::new(Some(tr!(
+            "История пока пуста",
+            "No connection history yet"
+        )))),
         Ok(entries) => {
             for entry in entries {
                 let time = glib::DateTime::from_unix_utc(entry.started)
@@ -952,25 +1020,31 @@ pub fn history(parent: &adw::ApplicationWindow, state: Rc<State>) {
                     .unwrap_or_default();
                 let outcome = if entry.ended.is_none() {
                     if entry.connected {
-                        "Подключено"
+                        tr!("Подключено", "Connected")
                     } else {
-                        "Подключение…"
+                        tr!("Подключение…", "Connecting…")
                     }
                 } else {
                     &entry.outcome
                 };
                 let row = adw::ActionRow::builder()
                     .title(&entry.name)
-                    .subtitle(format!(
+                    .subtitle(tr_format!(
                         "{} · порт {} · {}\n{time} · {outcome}",
-                        entry.host, entry.port, entry.username
+                        "{} · port {} · {}\n{time} · {outcome}",
+                        entry.host,
+                        entry.port,
+                        entry.username
                     ))
                     .build();
                 row.set_use_markup(false);
                 list.append(&row);
             }
         }
-        Err(_) => list.append(&gtk::Label::new(Some("Не удалось прочитать историю"))),
+        Err(_) => list.append(&gtk::Label::new(Some(tr!(
+            "Не удалось прочитать историю",
+            "Could not read history"
+        )))),
     }
     root.append(
         &gtk::ScrolledWindow::builder()

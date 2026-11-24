@@ -23,7 +23,10 @@ pub fn discover(parent: &adw::ApplicationWindow, state: Rc<State>) {
 
 pub fn choose_directory(parent: &adw::ApplicationWindow, state: Rc<State>) {
     let chooser = gtk::FileDialog::builder()
-        .title("Каталог подключений Remmina")
+        .title(tr!(
+            "Каталог подключений Remmina",
+            "Remmina Profiles Folder"
+        ))
         .modal(true)
         .build();
     let future = chooser.select_folder_future(Some(parent));
@@ -36,7 +39,14 @@ pub fn choose_directory(parent: &adw::ApplicationWindow, state: Rc<State>) {
                 Err(_) => preview(
                     &parent,
                     state,
-                    vec![("Каталог".into(), Err("Не удалось выбрать каталог.".into()))],
+                    vec![(
+                        tr!("Каталог", "Folder").into(),
+                        Err(tr!(
+                            "Не удалось выбрать каталог.",
+                            "Could not select the folder."
+                        )
+                        .into()),
+                    )],
                 ),
             }
         }
@@ -49,7 +59,7 @@ fn scan_and_preview(
     directories: Vec<gio::File>,
 ) {
     let loading = adw::Dialog::builder()
-        .title("Поиск подключений Remmina")
+        .title(tr!("Поиск подключений Remmina", "Find Remmina Profiles"))
         .content_width(400)
         .build();
     let layout = gtk::Box::new(gtk::Orientation::Vertical, 12);
@@ -96,8 +106,12 @@ async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<(Profile, Stri
             Ok(enumerator) => enumerator,
             Err(_) => {
                 entries.push((
-                    "Каталог Remmina".into(),
-                    Err("Не удалось прочитать каталог.".into()),
+                    tr!("Каталог Remmina", "Remmina Folder").into(),
+                    Err(tr!(
+                        "Не удалось прочитать каталог.",
+                        "Could not read the folder."
+                    )
+                    .into()),
                 ));
                 continue;
             }
@@ -110,8 +124,12 @@ async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<(Profile, Stri
                 Ok(files) => files,
                 Err(_) => {
                     entries.push((
-                        "Каталог Remmina".into(),
-                        Err("Ошибка чтения списка файлов.".into()),
+                        tr!("Каталог Remmina", "Remmina Folder").into(),
+                        Err(tr!(
+                            "Ошибка чтения списка файлов.",
+                            "Could not read the file list."
+                        )
+                        .into()),
                     ));
                     break;
                 }
@@ -127,7 +145,7 @@ async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<(Profile, Stri
                 }
                 count += 1;
                 if count > 2000 {
-                    return vec![("Каталог Remmina".into(), Err("Найдено более 2000 файлов. Выберите меньший каталог; импорт не выполнен.".into()))];
+                    return vec![(tr!("Каталог Remmina", "Remmina Folder").into(), Err(tr!("Найдено более 2000 файлов. Выберите меньший каталог; импорт не выполнен.", "More than 2,000 files found. Choose a smaller folder before importing.").into()))];
                 }
                 let file = directory.child(info.name());
                 entries.push((
@@ -139,19 +157,22 @@ async fn scan(directories: Vec<gio::File>) -> Vec<(String, Result<(Profile, Stri
         let _ = enumerator.close_future(glib::Priority::DEFAULT).await;
     }
     if entries.is_empty() {
-        entries.push(("Поиск Remmina".into(), Err("Файлы .remmina не найдены. Выберите каталог вручную. Подкаталоги и символические ссылки не просматриваются.".into())));
+        entries.push((tr!("Поиск Remmina", "Find Remmina Profiles").into(), Err(tr!("Файлы .remmina не найдены. Выберите каталог вручную. Подкаталоги и символические ссылки не просматриваются.", "No .remmina files found. Choose the folder manually. Subfolders and symbolic links are skipped.").into())));
     }
     entries
 }
 
 pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
     let filter = gtk::FileFilter::new();
-    filter.set_name(Some("Профили Remmina (*.remmina)"));
+    filter.set_name(Some(tr!(
+        "Профили Remmina (*.remmina)",
+        "Remmina profiles (*.remmina)"
+    )));
     filter.add_pattern("*.remmina");
     let filters = gio::ListStore::new::<gtk::FileFilter>();
     filters.append(&filter);
     let chooser = gtk::FileDialog::builder()
-        .title("Импорт профилей Remmina")
+        .title(tr!("Импорт профилей Remmina", "Import Remmina Profiles"))
         .modal(true)
         .filters(&filters)
         .default_filter(&filter)
@@ -168,8 +189,9 @@ pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
                             &parent,
                             state,
                             vec![(
-                                "Выбор файлов".into(),
-                                Err("Не удалось выбрать файлы.".into()),
+                                tr!("Выбор файлов", "Choose Files").into(),
+                                Err(tr!("Не удалось выбрать файлы.", "Could not select files.")
+                                    .into()),
                             )],
                         );
                     }
@@ -183,8 +205,12 @@ pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
                     &parent,
                     state,
                     vec![(
-                        "Выбор файлов".into(),
-                        Err("Выберите не более 2000 файлов за один импорт.".into()),
+                        tr!("Выбор файлов", "Choose Files").into(),
+                        Err(tr!(
+                            "Выберите не более 2000 файлов за один импорт.",
+                            "Select up to 2,000 files per import."
+                        )
+                        .into()),
                     )],
                 );
             }
@@ -196,7 +222,7 @@ pub fn choose(parent: &adw::ApplicationWindow, state: Rc<State>) {
                 let name = file
                     .basename()
                     .map(|path| path.to_string_lossy().into_owned())
-                    .unwrap_or_else(|| "Файл Remmina".into());
+                    .unwrap_or_else(|| tr!("Файл Remmina", "Remmina File").into());
                 entries.push((name, read_profile(&file).await));
             }
         }
@@ -210,23 +236,24 @@ async fn read_profile(file: &gio::File) -> Result<(Profile, String)> {
     let stream = file
         .read_future(glib::Priority::DEFAULT)
         .await
-        .map_err(|_| "Не удалось открыть файл.")?;
+        .map_err(|_| tr!("Не удалось открыть файл.", "Could not open the file."))?;
     let result = async {
         let mut data = Vec::new();
         loop {
             let bytes = stream
                 .read_bytes_future(65536, glib::Priority::DEFAULT)
                 .await
-                .map_err(|_| "Не удалось прочитать файл.")?;
+                .map_err(|_| tr!("Не удалось прочитать файл.", "Could not read the file."))?;
             if bytes.is_empty() {
                 break;
             }
             if data.len() + bytes.len() > 1024 * 1024 {
-                return Err("Файл превышает 1 МиБ.".into());
+                return Err(tr!("Файл превышает 1 МиБ.", "The file exceeds 1 MiB.").into());
             }
             data.extend_from_slice(&bytes);
         }
-        let text = std::str::from_utf8(&data).map_err(|_| "Файл должен быть в UTF-8.")?;
+        let text = std::str::from_utf8(&data)
+            .map_err(|_| tr!("Файл должен быть в UTF-8.", "The file must use UTF-8."))?;
         remmina::parse(text)
     }
     .await;
@@ -240,7 +267,7 @@ fn preview(
     entries: Vec<(String, Result<(Profile, String)>)>,
 ) {
     let dialog = adw::Dialog::builder()
-        .title("Импорт Remmina — просмотр")
+        .title(tr!("Импорт Remmina — просмотр", "Remmina Import Preview"))
         .content_width(620)
         .content_height(560)
         .build();
@@ -250,7 +277,7 @@ fn preview(
     content.set_margin_start(16);
     content.set_margin_end(16);
     content.set_margin_bottom(16);
-    let notice = gtk::Label::new(Some("Переносятся только название, сервер, порт, пользователь и домен. Пароли, шлюзы, туннели, команды и остальные настройки не переносятся. Одинаковые профили будут пропущены. Снимите отметки с ненужных профилей."));
+    let notice = gtk::Label::new(Some(tr!("Переносятся только название, сервер, порт, пользователь и домен. Пароли, шлюзы, туннели, команды и остальные настройки не переносятся. Одинаковые профили будут пропущены. Снимите отметки с ненужных профилей.", "Imports names, groups, servers, ports, usernames and domains. Identical profiles are skipped. Select the profiles you want to import.")));
     notice.set_wrap(true);
     notice.set_xalign(0.0);
     content.append(&notice);
@@ -264,8 +291,9 @@ fn preview(
         match result {
             Ok((profile, folder)) => {
                 row.set_title(&profile.name);
-                row.set_subtitle(&format!(
+                row.set_subtitle(&tr_format!(
                     "{} · порт {} · пользователь: {} · домен: {}\nПапка: {} · {}",
+                    "{} · port {} · username: {} · domain: {}\nFolder: {} · {}",
                     profile.host,
                     profile.port,
                     profile.username,
@@ -291,7 +319,10 @@ fn preview(
     }
     let candidates = Rc::new(candidates);
     let selection = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    for (text, active) in [("Выбрать все", true), ("Снять отметки", false)] {
+    for (text, active) in [
+        (tr!("Выбрать все", "Select All"), true),
+        (tr!("Снять отметки", "Clear Selection"), false),
+    ] {
         let button = gtk::Button::with_label(text);
         let candidates = candidates.clone();
         button.connect_clicked(move |_| {
@@ -311,7 +342,7 @@ fn preview(
     let status = gtk::Label::new(None);
     status.set_wrap(true);
     content.append(&status);
-    let import = gtk::Button::with_label("Импортировать отмеченные");
+    let import = gtk::Button::with_label(tr!("Импортировать отмеченные", "Import Selected"));
     import.add_css_class("suggested-action");
     import.set_sensitive(!candidates.is_empty());
     content.append(&import);
@@ -319,18 +350,18 @@ fn preview(
         let profiles: Vec<_> = candidates.iter().filter(|(check, _)| check.is_active())
             .map(|(_, profile)| profile.clone()).collect();
         if profiles.is_empty() {
-            status.set_text("Отметьте хотя бы один профиль.");
+            status.set_text(tr!("Отметьте хотя бы один профиль.", "Select at least one profile."));
             return;
         }
         match state.store.import_with_folders(&profiles) {
             Ok(added) => {
                 profiles_ui::refresh(&state);
-                status.set_text(&format!("Добавлено: {added}. Дубликатов пропущено: {}.", profiles.len() - added));
+                status.set_text(&tr_format!("Добавлено: {added}. Дубликатов пропущено: {}.", "Added: {added}. Duplicates skipped: {}.", profiles.len() - added));
                 button.set_sensitive(false);
                 for (check, _) in candidates.iter() { check.set_sensitive(false); }
             }
             Err(_) => {
-                status.set_text("Импорт не выполнен. База данных недоступна или произошла ошибка записи; изменения отменены.");
+                status.set_text(tr!("Импорт не выполнен. База данных недоступна или произошла ошибка записи; изменения отменены.", "Import failed because the database was unavailable or could not be written. Changes were rolled back."));
             }
         }
     });

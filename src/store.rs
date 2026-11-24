@@ -31,25 +31,37 @@ impl Default for Profile {
 impl Profile {
     pub fn validate(&self) -> Result<()> {
         if !gtk::glib::uuid_string_is_valid(&self.uid) {
-            return Err("Некорректный идентификатор профиля.".into());
+            return Err(tr!(
+                "Некорректный идентификатор профиля.",
+                "Invalid profile identifier."
+            )
+            .into());
         }
         if self.name.trim().is_empty() || self.host.trim().is_empty() {
-            return Err("Заполните название и сервер.".into());
+            return Err(tr!("Заполните название и сервер.", "Enter a name and server.").into());
         }
         if self.port == 0 {
-            return Err("Порт должен быть от 1 до 65535.".into());
+            return Err(tr!(
+                "Порт должен быть от 1 до 65535.",
+                "Enter a port from 1 to 65535."
+            )
+            .into());
         }
         if self.host.chars().any(char::is_whitespace)
             || self.host.contains('/')
             || self.host.contains('@')
         {
-            return Err("Введите имя сервера или IP без схемы, пользователя и пробелов. Порт указывается отдельно.".into());
+            return Err(tr!("Введите имя сервера или IP без схемы, пользователя и пробелов. Порт указывается отдельно.", "Enter a hostname or IP without a scheme, username or spaces. Enter the port separately.").into());
         }
         if [&self.name, &self.host, &self.username, &self.domain]
             .iter()
             .any(|s| s.chars().any(char::is_control))
         {
-            return Err("Поля не должны содержать управляющие символы.".into());
+            return Err(tr!(
+                "Поля не должны содержать управляющие символы.",
+                "Fields cannot contain control characters."
+            )
+            .into());
         }
         Ok(())
     }
@@ -82,7 +94,11 @@ impl SessionOptions {
                     || self.shared_folder.chars().any(char::is_control)
                     || self.shared_folder.len() > 4096))
         {
-            return Err("Некорректные параметры сеанса.".into());
+            return Err(tr!(
+                "Некорректные параметры сеанса.",
+                "Invalid session settings."
+            )
+            .into());
         }
         Ok(())
     }
@@ -106,7 +122,13 @@ impl Store {
         let directory = gtk::glib::user_data_dir().join("rdp-manager");
         fs::create_dir_all(&directory)?;
         let store = Self::open(&directory.join("profiles.sqlite3"))?;
-        store.0.execute("UPDATE session_history SET ended_at=unixepoch(),outcome='Прервано при завершении приложения' WHERE ended_at IS NULL",[])?;
+        store.0.execute(
+            "UPDATE session_history SET ended_at=unixepoch(),outcome=?1 WHERE ended_at IS NULL",
+            [tr!(
+                "Прервано при завершении приложения",
+                "Interrupted when the application exited"
+            )],
+        )?;
         Ok(store)
     }
 
@@ -119,7 +141,11 @@ impl Store {
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
         if version > 7 {
-            return Err("База создана более новой версией приложения.".into());
+            return Err(tr!(
+                "База создана более новой версией приложения.",
+                "The database was created by a newer version of the app."
+            )
+            .into());
         }
         if version == 0 {
             let transaction = connection.transaction()?;
@@ -212,7 +238,11 @@ impl Store {
     }
     pub fn rename_folder(&self, old: &str, new: &str) -> Result<()> {
         if new.is_empty() || new.chars().count() > 80 || new.chars().any(char::is_control) {
-            return Err("Введите название папки длиной до 80 символов.".into());
+            return Err(tr!(
+                "Введите название папки длиной до 80 символов.",
+                "Enter a folder name of up to 80 characters."
+            )
+            .into());
         }
         if old == new {
             return Ok(());
@@ -223,7 +253,11 @@ impl Store {
             params![new, old],
         )?;
         if changed == 0 {
-            return Err("Папка уже переименована или такое название занято.".into());
+            return Err(tr!(
+                "Папка уже переименована или такое название занято.",
+                "The folder was already renamed or the name is in use."
+            )
+            .into());
         }
         Ok(())
     }
@@ -259,7 +293,11 @@ impl Store {
         if folder
             .is_some_and(|name| name.chars().count() > 80 || name.chars().any(char::is_control))
         {
-            return Err("Название папки должно содержать не больше 80 символов.".into());
+            return Err(tr!(
+                "Название папки должно содержать не больше 80 символов.",
+                "Folder names can contain up to 80 characters."
+            )
+            .into());
         }
         options.validate()?;
         let transaction = self.0.unchecked_transaction()?;
@@ -336,7 +374,11 @@ impl Store {
             params![host, port, key],
         )?;
         if self.sftp_host_key(host, port)?.as_deref() != Some(key) {
-            return Err("Ключ сервера уже изменился. Существующее доверие не заменено.".into());
+            return Err(tr!(
+                "Ключ сервера уже изменился. Существующее доверие не заменено.",
+                "The host key has changed. The trusted key was retained."
+            )
+            .into());
         }
         transaction.commit()?;
         Ok(())
@@ -384,7 +426,11 @@ impl Store {
                 ],
             )?;
             if count == 0 {
-                return Err("Профиль уже удалён. Закройте форму и обновите список.".into());
+                return Err(tr!(
+                    "Профиль уже удалён. Закройте форму и обновите список.",
+                    "The profile was deleted. Close the form and refresh the list."
+                )
+                .into());
             }
             Ok(id)
         } else {
@@ -411,7 +457,11 @@ impl Store {
         for (profile, folder) in profiles {
             profile.validate()?;
             if folder.chars().count() > 80 || folder.chars().any(char::is_control) {
-                return Err("Некорректное название группы Remmina (до 80 символов).".into());
+                return Err(tr!(
+                    "Некорректное название группы Remmina (до 80 символов).",
+                    "Invalid Remmina group name (up to 80 characters)."
+                )
+                .into());
             }
         }
         let transaction = self.0.unchecked_transaction()?;
@@ -455,32 +505,43 @@ impl Store {
         for change in changes {
             change.incoming.profile().validate()?;
             if !ids.insert(&change.incoming.uid) {
-                return Err("Повторяющийся идентификатор профиля.".into());
+                return Err(tr!(
+                    "Повторяющийся идентификатор профиля.",
+                    "Duplicate profile identifier."
+                )
+                .into());
             }
             let current = local.iter().find(|p| p.uid == change.incoming.uid);
             if current != change.expected.as_ref() {
-                return Err(
-                    "Профили изменились после просмотра. Откройте файл заново и повторите выбор."
-                        .into(),
-                );
+                return Err(tr!(
+                    "Профили изменились после просмотра. Откройте файл заново и повторите выбор.",
+                    "Profiles changed after preview. Reopen the bundle and select them again."
+                )
+                .into());
             }
             match change.action {
                 ImportAction::Add if current.is_none() => {
                     if local.iter().any(|p| change.incoming.same_fields(p)) {
-                        return Err(
-                            "Один из профилей уже появился в базе. Откройте файл заново.".into(),
-                        );
+                        return Err(tr!(
+                            "Один из профилей уже появился в базе. Откройте файл заново.",
+                            "One profile was already added. Reopen the bundle."
+                        )
+                        .into());
                     }
                     if additions
                         .iter()
                         .any(|p| change.incoming.same_fields(&p.profile()))
                     {
-                        return Err("В выбранном наборе повторяется одно подключение. Оставьте одну запись.".into());
+                        return Err(tr!("В выбранном наборе повторяется одно подключение. Оставьте одну запись.", "The selection contains a duplicate connection. Keep only one entry.").into());
                     }
                     additions.push(&change.incoming);
                 }
                 ImportAction::Replace | ImportAction::Copy if current.is_some() => {}
-                _ => return Err("Некорректное действие переноса.".into()),
+                _ => {
+                    return Err(
+                        tr!("Некорректное действие переноса.", "Invalid import action.").into(),
+                    )
+                }
             }
         }
         let (mut added, mut replaced, mut copied) = (0, 0, 0);
@@ -496,7 +557,7 @@ impl Store {
                 }
                 ImportAction::Copy => {
                     p.uid = gtk::glib::uuid_string_random().into();
-                    p.name.push_str(" (копия)");
+                    p.name.push_str(tr!(" (копия)", " (copy)"));
                     copied += 1;
                 }
             }

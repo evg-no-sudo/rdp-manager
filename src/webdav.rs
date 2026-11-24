@@ -24,9 +24,11 @@ impl Settings {
         let url = directory_url(directory)?;
         let username = username.trim();
         if username.is_empty() || username.contains(':') || username.chars().any(char::is_control) {
-            return Err(
-                "Введите имя пользователя WebDAV без двоеточия и управляющих символов.".into(),
-            );
+            return Err(tr!(
+                "Введите имя пользователя WebDAV без двоеточия и управляющих символов.",
+                "Enter a WebDAV username without colons or control characters."
+            )
+            .into());
         }
         Ok(Self {
             uid: gtk::glib::uuid_string_random().into(),
@@ -40,19 +42,35 @@ impl Settings {
         if !path.exists() {
             return Ok(None);
         }
-        let file = std::fs::File::open(path).map_err(|_| "Не удалось открыть настройки WebDAV.")?;
+        let file = std::fs::File::open(path).map_err(|_| {
+            tr!(
+                "Не удалось открыть настройки WebDAV.",
+                "Could not open WebDAV settings."
+            )
+        })?;
         let mut bytes = Vec::new();
-        file.take(16385)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "Ошибка чтения настроек WebDAV.")?;
+        file.take(16385).read_to_end(&mut bytes).map_err(|_| {
+            tr!(
+                "Ошибка чтения настроек WebDAV.",
+                "Could not read WebDAV settings."
+            )
+        })?;
         if bytes.len() > 16384 {
-            return Err("Файл настроек WebDAV слишком большой.".into());
+            return Err(tr!(
+                "Файл настроек WebDAV слишком большой.",
+                "The WebDAV settings file is too large."
+            )
+            .into());
         }
-        let settings: Self =
-            serde_json::from_slice(&bytes).map_err(|_| "Некорректные настройки WebDAV.")?;
+        let settings: Self = serde_json::from_slice(&bytes)
+            .map_err(|_| tr!("Некорректные настройки WebDAV.", "Invalid WebDAV settings."))?;
         directory_url(&settings.directory)?;
         if !gtk::glib::uuid_string_is_valid(&settings.uid) {
-            return Err("Некорректный идентификатор настроек WebDAV.".into());
+            return Err(tr!(
+                "Некорректный идентификатор настроек WebDAV.",
+                "Invalid WebDAV settings identifier."
+            )
+            .into());
         }
         Self::new(&settings.directory, &settings.username)?;
         Ok(Some(settings))
@@ -60,22 +78,49 @@ impl Settings {
 
     pub fn save(&self) -> Result<()> {
         let directory = gtk::glib::user_config_dir().join("rdp-manager");
-        std::fs::create_dir_all(&directory).map_err(|_| "Не удалось создать каталог настроек.")?;
-        let mut file = tempfile::NamedTempFile::new_in(&directory)
-            .map_err(|_| "Не удалось создать файл настроек.")?;
-        let bytes =
-            serde_json::to_vec_pretty(self).map_err(|_| "Не удалось подготовить настройки.")?;
+        std::fs::create_dir_all(&directory).map_err(|_| {
+            tr!(
+                "Не удалось создать каталог настроек.",
+                "Could not create the settings directory."
+            )
+        })?;
+        let mut file = tempfile::NamedTempFile::new_in(&directory).map_err(|_| {
+            tr!(
+                "Не удалось создать файл настроек.",
+                "Could not create the settings file."
+            )
+        })?;
+        let bytes = serde_json::to_vec_pretty(self).map_err(|_| {
+            tr!(
+                "Не удалось подготовить настройки.",
+                "Could not prepare settings."
+            )
+        })?;
         file.write_all(&bytes)
             .and_then(|_| file.as_file().sync_all())
-            .map_err(|_| "Не удалось сохранить настройки.")?;
-        file.persist(directory.join("webdav.json"))
-            .map_err(|_| "Не удалось заменить файл настроек.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось сохранить настройки.",
+                    "Could not save settings."
+                )
+            })?;
+        file.persist(directory.join("webdav.json")).map_err(|_| {
+            tr!(
+                "Не удалось заменить файл настроек.",
+                "Could not replace the settings file."
+            )
+        })?;
         Ok(())
     }
 }
 
 fn directory_url(input: &str) -> Result<Url> {
-    let mut url = Url::parse(input.trim()).map_err(|_| "Некорректный URL каталога WebDAV.")?;
+    let mut url = Url::parse(input.trim()).map_err(|_| {
+        tr!(
+            "Некорректный URL каталога WebDAV.",
+            "Invalid WebDAV folder URL."
+        )
+    })?;
     if url.scheme() != "https"
         || url.host_str().is_none()
         || !url.username().is_empty()
@@ -83,7 +128,7 @@ fn directory_url(input: &str) -> Result<Url> {
         || url.query().is_some()
         || url.fragment().is_some()
     {
-        return Err("Нужен HTTPS URL каталога без пароля, параметров и фрагмента. Имя пользователя указывается отдельно.".into());
+        return Err(tr!("Нужен HTTPS URL каталога без пароля, параметров и фрагмента. Имя пользователя указывается отдельно.", "Enter an HTTPS folder URL without a password, query or fragment. Enter the username separately.").into());
     }
     if !url.path().ends_with('/') {
         let path = format!("{}/", url.path());
@@ -105,9 +150,11 @@ pub struct Dav {
 impl Dav {
     pub fn new(settings: Settings, password: Zeroizing<String>) -> Result<Self> {
         if password.is_empty() {
-            return Err(
-                "Введите пароль приложения WebDAV либо сохраните его в Secret Service.".into(),
-            );
+            return Err(tr!(
+                "Введите пароль приложения WebDAV либо сохраните его в Secret Service.",
+                "Enter the WebDAV app password or save it in Secret Service."
+            )
+            .into());
         }
         let base = directory_url(&settings.directory)?;
         let client = Client::builder()
@@ -117,7 +164,12 @@ impl Dav {
             .timeout(Duration::from_secs(45))
             .user_agent("Linux-RDP-Manager/0.1")
             .build()
-            .map_err(|_| "Не удалось создать HTTPS-клиент.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось создать HTTPS-клиент.",
+                    "Could not initialize the HTTPS client."
+                )
+            })?;
         Ok(Self {
             client,
             base,
@@ -146,7 +198,7 @@ impl Dav {
 
     pub fn upload(&self, bytes: Vec<u8>) -> Result<String> {
         if bytes.len() > transfer::MAX_BYTES {
-            return Err("Набор превышает 4 МиБ.".into());
+            return Err(tr!("Набор превышает 4 МиБ.", "The bundle exceeds 4 MiB.").into());
         }
         let name = transfer::new_snapshot_name()?;
         self.put(&name, bytes)?;
@@ -183,11 +235,11 @@ impl Dav {
 
     fn target(&self, name: &str) -> Result<Url> {
         if !snapshot_name(name) {
-            return Err("Некорректное имя набора.".into());
+            return Err(tr!("Некорректное имя набора.", "Invalid bundle name.").into());
         }
         self.base
             .join(name)
-            .map_err(|_| "Некорректный адрес набора.".into())
+            .map_err(|_| tr!("Некорректный адрес набора.", "Invalid bundle URL.").into())
     }
 }
 
@@ -196,15 +248,28 @@ fn bounded(response: Response, limit: usize) -> Result<Vec<u8>> {
         .content_length()
         .is_some_and(|length| length > limit as u64)
     {
-        return Err("Ответ сервера превышает допустимый размер.".into());
+        return Err(tr!(
+            "Ответ сервера превышает допустимый размер.",
+            "The server response exceeds the size limit."
+        )
+        .into());
     }
     let mut bytes = Vec::new();
     response
         .take((limit + 1) as u64)
         .read_to_end(&mut bytes)
-        .map_err(|_| "Не удалось полностью прочитать ответ WebDAV.")?;
+        .map_err(|_| {
+            tr!(
+                "Не удалось полностью прочитать ответ WebDAV.",
+                "Could not read the complete WebDAV response."
+            )
+        })?;
     if bytes.len() > limit {
-        return Err("Ответ сервера превышает допустимый размер.".into());
+        return Err(tr!(
+            "Ответ сервера превышает допустимый размер.",
+            "The server response exceeds the size limit."
+        )
+        .into());
     }
     Ok(bytes)
 }
@@ -212,39 +277,83 @@ fn bounded(response: Response, limit: usize) -> Result<Vec<u8>> {
 fn network_error(error: reqwest::Error) -> String {
     // reqwest errors may include a private URL; never display/debug the raw error.
     if error.is_timeout() {
-        "Сервер WebDAV не ответил за отведённое время.".into()
+        tr!(
+            "Сервер WebDAV не ответил за отведённое время.",
+            "The WebDAV request timed out."
+        )
+        .into()
     } else {
-        "Не удалось подключиться к WebDAV. Проверьте адрес, сеть и доверенный HTTPS-сертификат. Перенаправления не выполняются.".into()
+        tr!("Не удалось подключиться к WebDAV. Проверьте адрес, сеть и доверенный HTTPS-сертификат. Перенаправления не выполняются.", "Could not connect to WebDAV. Check the URL, network and HTTPS certificate. Redirects are disabled.").into()
     }
 }
 
 fn status_error(status: StatusCode) -> String {
     match status.as_u16() {
-        401 => "WebDAV: неверное имя пользователя или пароль приложения.".into(),
-        403 => "WebDAV: недостаточно прав на выбранный каталог.".into(),
-        404 | 409 => {
-            "Каталог WebDAV не найден. Создайте папку в Nextcloud и укажите её точный WebDAV URL."
-                .into()
-        }
-        412 => "Набор с таким именем уже существует. Он не перезаписан; повторите отправку.".into(),
-        423 => "Каталог WebDAV временно заблокирован. Повторите позже.".into(),
-        507 => "В хранилище недостаточно свободного места.".into(),
-        _ if status.is_redirection() => {
-            "WebDAV вернул перенаправление. Укажите конечный HTTPS URL каталога.".into()
-        }
-        _ => format!("Ошибка WebDAV: HTTP {}.", status.as_u16()),
+        401 => tr!(
+            "WebDAV: неверное имя пользователя или пароль приложения.",
+            "WebDAV: incorrect username or app password."
+        )
+        .into(),
+        403 => tr!(
+            "WebDAV: недостаточно прав на выбранный каталог.",
+            "WebDAV: access denied to the selected folder."
+        )
+        .into(),
+        404 | 409 => tr!(
+            "Каталог WebDAV не найден. Создайте папку в Nextcloud и укажите её точный WebDAV URL.",
+            "WebDAV folder not found. Create it in Nextcloud and enter its exact WebDAV URL."
+        )
+        .into(),
+        412 => tr!(
+            "Набор с таким именем уже существует. Он не перезаписан; повторите отправку.",
+            "A bundle with that name already exists. Retry the upload."
+        )
+        .into(),
+        423 => tr!(
+            "Каталог WebDAV временно заблокирован. Повторите позже.",
+            "The WebDAV folder is locked. Try again later."
+        )
+        .into(),
+        507 => tr!(
+            "В хранилище недостаточно свободного места.",
+            "Not enough space on the storage server."
+        )
+        .into(),
+        _ if status.is_redirection() => tr!(
+            "WebDAV вернул перенаправление. Укажите конечный HTTPS URL каталога.",
+            "WebDAV returned a redirect. Enter the final HTTPS folder URL."
+        )
+        .into(),
+        _ => tr_format!(
+            "Ошибка WebDAV: HTTP {}.",
+            "WebDAV error: HTTP {}.",
+            status.as_u16()
+        ),
     }
 }
 
 fn parse_listing(base: &Url, bytes: &[u8]) -> Result<Vec<Snapshot>> {
-    let text = std::str::from_utf8(bytes).map_err(|_| "Ответ WebDAV не в UTF-8.")?;
-    let document =
-        roxmltree::Document::parse(text).map_err(|_| "Некорректный XML-ответ WebDAV.")?;
+    let text = std::str::from_utf8(bytes).map_err(|_| {
+        tr!(
+            "Ответ WebDAV не в UTF-8.",
+            "The WebDAV response is not UTF-8."
+        )
+    })?;
+    let document = roxmltree::Document::parse(text).map_err(|_| {
+        tr!(
+            "Некорректный XML-ответ WebDAV.",
+            "Invalid WebDAV XML response."
+        )
+    })?;
     if !document
         .root_element()
         .has_tag_name(("DAV:", "multistatus"))
     {
-        return Err("Ответ не является списком WebDAV.".into());
+        return Err(tr!(
+            "Ответ не является списком WebDAV.",
+            "The response is not a WebDAV listing."
+        )
+        .into());
     }
     let mut result = Vec::new();
     let mut names = std::collections::HashSet::new();
@@ -305,7 +414,7 @@ fn parse_listing(base: &Url, bytes: &[u8]) -> Result<Vec<Snapshot>> {
                 .children()
                 .find(|node| node.has_tag_name(("DAV:", "getlastmodified")))
                 .and_then(|node| node.text())
-                .unwrap_or("Время не указано");
+                .unwrap_or(tr!("Время не указано", "Time unavailable"));
             result.push(Snapshot {
                 name: name.into(),
                 modified: modified.chars().take(100).collect(),
@@ -313,7 +422,11 @@ fn parse_listing(base: &Url, bytes: &[u8]) -> Result<Vec<Snapshot>> {
             break;
         }
         if result.len() > 2000 {
-            return Err("В каталоге более 2000 наборов. Используйте отдельную папку.".into());
+            return Err(tr!(
+                "В каталоге более 2000 наборов. Используйте отдельную папку.",
+                "The folder contains more than 2,000 bundles. Use a separate folder."
+            )
+            .into());
         }
     }
     result.sort_by(|a, b| b.name.cmp(&a.name));
@@ -440,13 +553,19 @@ mod tests {
         assert!(dav
             .put("rdp-profiles-test.rdpm", payload)
             .unwrap_err()
-            .contains("не перезаписан"));
-        assert!(dav.list().unwrap_err().contains("пароль приложения"));
-        assert!(dav.list().unwrap_err().contains("перенаправление"));
+            .contains(tr!("не перезаписан", "already exists")));
+        assert!(dav
+            .list()
+            .unwrap_err()
+            .contains(tr!("пароль приложения", "app password")));
+        assert!(dav
+            .list()
+            .unwrap_err()
+            .contains(tr!("перенаправление", "redirect")));
         assert!(dav
             .download("rdp-profiles-test.rdpm")
             .unwrap_err()
-            .contains("размер"));
+            .contains(tr!("размер", "size limit")));
         server.join().unwrap();
     }
 }

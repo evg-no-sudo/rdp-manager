@@ -50,11 +50,15 @@ impl Settings {
                 .any(|c| c.is_whitespace() || c.is_control() || "/@\\[]".contains(c))
             || self.port == 0
         {
-            return Err("Введите DNS-имя или IP сервера без схемы; порт — от 1 до 65535.".into());
+            return Err(tr!(
+                "Введите DNS-имя или IP сервера без схемы; порт — от 1 до 65535.",
+                "Enter a hostname or IP without a scheme and a port from 1 to 65535."
+            )
+            .into());
         }
         if self.host.contains(':') && self.host.parse::<std::net::Ipv6Addr>().is_err() {
             return Err(
-                "Порт указывается в отдельном поле. В поле сервера допустимы DNS, IPv4 или IPv6."
+                tr!("Порт указывается в отдельном поле. В поле сервера допустимы DNS, IPv4 или IPv6.", "Enter the port separately. The server field accepts a hostname, IPv4 or IPv6 address.")
                     .into(),
             );
         }
@@ -62,7 +66,11 @@ impl Settings {
             || self.username.len() > 1024
             || self.username.chars().any(char::is_control)
         {
-            return Err("Введите корректного пользователя SSH.".into());
+            return Err(tr!(
+                "Введите корректного пользователя SSH.",
+                "Enter a valid SSH username."
+            )
+            .into());
         }
         if self.directory.is_empty()
             || self.directory.len() > 4096
@@ -72,14 +80,18 @@ impl Settings {
                 .any(|c| c == Component::ParentDir)
             || self.directory.starts_with('~')
         {
-            return Err("Укажите каталог без '..' и '~': абсолютный путь или путь относительно домашнего каталога SFTP (например rdp-manager).".into());
+            return Err(tr!("Укажите каталог без '..' и '~': абсолютный путь или путь относительно домашнего каталога SFTP (например rdp-manager).", "Enter an absolute path or a path relative to the SFTP home folder. Omit '..' and '~'.").into());
         }
         if self.auth == Auth::KeyFile {
             if self.key_file.len() > 4096
                 || !Path::new(&self.key_file).is_absolute()
                 || self.key_file.chars().any(char::is_control)
             {
-                return Err("Выберите абсолютный путь к файлу приватного SSH-ключа.".into());
+                return Err(tr!(
+                    "Выберите абсолютный путь к файлу приватного SSH-ключа.",
+                    "Choose an absolute path to the private SSH key."
+                )
+                .into());
             }
         } else {
             self.key_file.clear();
@@ -88,7 +100,11 @@ impl Settings {
             self.secret_saved = false;
         }
         if !gtk::glib::uuid_string_is_valid(&self.uid) {
-            return Err("Некорректный идентификатор настроек SFTP.".into());
+            return Err(tr!(
+                "Некорректный идентификатор настроек SFTP.",
+                "Invalid SFTP settings identifier."
+            )
+            .into());
         }
         Ok(())
     }
@@ -110,17 +126,30 @@ impl Settings {
         let file = match std::fs::File::open(&path) {
             Ok(file) => file,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(_) => return Err("Не удалось открыть настройки SFTP.".into()),
+            Err(_) => {
+                return Err(tr!(
+                    "Не удалось открыть настройки SFTP.",
+                    "Could not open SFTP settings."
+                )
+                .into())
+            }
         };
         let mut bytes = Vec::new();
-        file.take(32769)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "Ошибка чтения настроек SFTP.")?;
+        file.take(32769).read_to_end(&mut bytes).map_err(|_| {
+            tr!(
+                "Ошибка чтения настроек SFTP.",
+                "Could not read SFTP settings."
+            )
+        })?;
         if bytes.len() > 32768 {
-            return Err("Файл настроек SFTP слишком большой.".into());
+            return Err(tr!(
+                "Файл настроек SFTP слишком большой.",
+                "The SFTP settings file is too large."
+            )
+            .into());
         }
-        let mut settings: Self =
-            serde_json::from_slice(&bytes).map_err(|_| "Некорректные настройки SFTP.")?;
+        let mut settings: Self = serde_json::from_slice(&bytes)
+            .map_err(|_| tr!("Некорректные настройки SFTP.", "Invalid SFTP settings."))?;
         settings.validate()?;
         Ok(Some(settings))
     }
@@ -129,16 +158,38 @@ impl Settings {
         let mut checked = self.clone();
         checked.validate()?;
         let directory = gtk::glib::user_config_dir().join("rdp-manager");
-        std::fs::create_dir_all(&directory).map_err(|_| "Не удалось создать каталог настроек.")?;
-        let mut file = tempfile::NamedTempFile::new_in(&directory)
-            .map_err(|_| "Не удалось создать настройки SFTP.")?;
-        let bytes = serde_json::to_vec_pretty(&checked)
-            .map_err(|_| "Не удалось подготовить настройки SFTP.")?;
+        std::fs::create_dir_all(&directory).map_err(|_| {
+            tr!(
+                "Не удалось создать каталог настроек.",
+                "Could not create the settings directory."
+            )
+        })?;
+        let mut file = tempfile::NamedTempFile::new_in(&directory).map_err(|_| {
+            tr!(
+                "Не удалось создать настройки SFTP.",
+                "Could not create SFTP settings."
+            )
+        })?;
+        let bytes = serde_json::to_vec_pretty(&checked).map_err(|_| {
+            tr!(
+                "Не удалось подготовить настройки SFTP.",
+                "Could not prepare SFTP settings."
+            )
+        })?;
         file.write_all(&bytes)
             .and_then(|_| file.as_file().sync_all())
-            .map_err(|_| "Не удалось записать настройки SFTP.")?;
-        file.persist(directory.join("sftp.json"))
-            .map_err(|_| "Не удалось сохранить настройки SFTP.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось записать настройки SFTP.",
+                    "Could not write SFTP settings."
+                )
+            })?;
+        file.persist(directory.join("sftp.json")).map_err(|_| {
+            tr!(
+                "Не удалось сохранить настройки SFTP.",
+                "Could not save SFTP settings."
+            )
+        })?;
         Ok(())
     }
 }
@@ -197,26 +248,53 @@ impl Remote {
         settings.validate()?;
         let addresses: Vec<_> = (settings.host.as_str(), settings.port)
             .to_socket_addrs()
-            .map_err(|_| "Не удалось определить адрес SSH-сервера.")?
+            .map_err(|_| {
+                tr!(
+                    "Не удалось определить адрес SSH-сервера.",
+                    "Could not resolve the SSH server address."
+                )
+            })?
             .take(4)
             .collect();
         let tcp = addresses
             .iter()
             .find_map(|address| TcpStream::connect_timeout(address, Duration::from_secs(10)).ok())
-            .ok_or("Не удалось подключиться к SSH-серверу. Проверьте адрес, порт и сеть.")?;
+            .ok_or(tr!(
+                "Не удалось подключиться к SSH-серверу. Проверьте адрес, порт и сеть.",
+                "Could not connect to SSH. Check the address, port and network."
+            ))?;
         tcp.set_read_timeout(Some(Duration::from_secs(30)))
-            .map_err(|_| "Не удалось настроить SSH-соединение.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось настроить SSH-соединение.",
+                    "Could not configure the SSH connection."
+                )
+            })?;
         tcp.set_write_timeout(Some(Duration::from_secs(30)))
-            .map_err(|_| "Не удалось настроить SSH-соединение.")?;
-        let mut session = Session::new().map_err(|_| "Не удалось создать SSH-сессию.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось настроить SSH-соединение.",
+                    "Could not configure the SSH connection."
+                )
+            })?;
+        let mut session = Session::new().map_err(|_| {
+            tr!(
+                "Не удалось создать SSH-сессию.",
+                "Could not create the SSH session."
+            )
+        })?;
         session.set_timeout(30_000);
         session.set_tcp_stream(tcp);
-        session
-            .handshake()
-            .map_err(|_| "SSH handshake не выполнен. Проверьте совместимость SSH-сервера.")?;
-        let (key, algorithm) = session
-            .host_key()
-            .ok_or("Сервер не предоставил ключ SSH.")?;
+        session.handshake().map_err(|_| {
+            tr!(
+                "SSH handshake не выполнен. Проверьте совместимость SSH-сервера.",
+                "The SSH handshake failed. Check server compatibility."
+            )
+        })?;
+        let (key, algorithm) = session.host_key().ok_or(tr!(
+            "Сервер не предоставил ключ SSH.",
+            "The server did not supply an SSH host key."
+        ))?;
         let identity = HostIdentity {
             host: settings.host.clone(),
             port: settings.port,
@@ -225,93 +303,138 @@ impl Remote {
             algorithm: format!("{algorithm:?}"),
         };
         if trusted.as_ref().is_some_and(|pinned| pinned != key) {
-            return Err("Ключ SSH-сервера изменился! Авторизация не выполнялась. Проверьте сервер и его новый отпечаток у администратора.".into());
+            return Err(tr!("Ключ SSH-сервера изменился! Авторизация не выполнялась. Проверьте сервер и его новый отпечаток у администратора.", "The SSH host key changed. Authentication was stopped. Verify the new fingerprint with your administrator.").into());
         }
-        let mut known = session
-            .known_hosts()
-            .map_err(|_| "Не удалось проверить SSH known_hosts.")?;
+        let mut known = session.known_hosts().map_err(|_| {
+            tr!(
+                "Не удалось проверить SSH known_hosts.",
+                "Could not check SSH known_hosts."
+            )
+        })?;
         match std::fs::metadata(known_hosts) {
             Ok(_) => {
                 known
                     .read_file(known_hosts, KnownHostFileKind::OpenSSH)
                     .map_err(|_| {
-                        "Не удалось прочитать SSH known_hosts; авторизация остановлена."
+                        tr!(
+                            "Не удалось прочитать SSH known_hosts; авторизация остановлена.",
+                            "Could not read SSH known_hosts. Authentication was stopped."
+                        )
                     })?;
             }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(_) => return Err("SSH known_hosts недоступен; авторизация остановлена.".into()),
+            Err(_) => {
+                return Err(tr!(
+                    "SSH known_hosts недоступен; авторизация остановлена.",
+                    "SSH known_hosts is unavailable. Authentication was stopped."
+                )
+                .into())
+            }
         }
         match known.check_port(&settings.host, settings.port, key) {
             CheckResult::Match => {}
             CheckResult::Mismatch => {
-                return Err(
-                    "Ключ SSH-сервера отличается от known_hosts! Авторизация не выполнялась."
-                        .into(),
+                return Err(tr!(
+                    "Ключ SSH-сервера отличается от known_hosts! Авторизация не выполнялась.",
+                    "The SSH host key differs from known_hosts. Authentication was stopped."
                 )
+                .into())
             }
-            CheckResult::Failure => return Err("Не удалось проверить ключ SSH-сервера.".into()),
+            CheckResult::Failure => {
+                return Err(tr!(
+                    "Не удалось проверить ключ SSH-сервера.",
+                    "Could not verify the SSH host key."
+                )
+                .into())
+            }
             CheckResult::NotFound if trusted.is_some() => {}
             CheckResult::NotFound => return Err(Failure::UnknownHost(identity)),
         }
         match settings.auth {
             Auth::Agent => {
-                let mut agent = session.agent().map_err(|_| "SSH-agent недоступен.")?;
-                agent
-                    .connect()
-                    .map_err(|_| "Не удалось подключиться к SSH-agent. Проверьте SSH_AUTH_SOCK.")?;
-                agent
-                    .list_identities()
-                    .map_err(|_| "Не удалось получить список ключей SSH-agent.")?;
-                let identities = agent
-                    .identities()
-                    .map_err(|_| "Не удалось прочитать ключи SSH-agent.")?;
+                let mut agent = session
+                    .agent()
+                    .map_err(|_| tr!("SSH-agent недоступен.", "SSH agent unavailable."))?;
+                agent.connect().map_err(|_| {
+                    tr!(
+                        "Не удалось подключиться к SSH-agent. Проверьте SSH_AUTH_SOCK.",
+                        "Could not connect to the SSH agent. Check SSH_AUTH_SOCK."
+                    )
+                })?;
+                agent.list_identities().map_err(|_| {
+                    tr!(
+                        "Не удалось получить список ключей SSH-agent.",
+                        "Could not list SSH agent keys."
+                    )
+                })?;
+                let identities = agent.identities().map_err(|_| {
+                    tr!(
+                        "Не удалось прочитать ключи SSH-agent.",
+                        "Could not read SSH agent keys."
+                    )
+                })?;
                 for identity in identities.iter().take(16) {
                     if agent.userauth(&settings.username, identity).is_ok() {
                         break;
                     }
                 }
                 if !session.authenticated() {
-                    return Err("Вход через SSH-agent не выполнен. Проверьте добавленные ключи и authorized_keys на сервере.".into());
+                    return Err(tr!("Вход через SSH-agent не выполнен. Проверьте добавленные ключи и authorized_keys на сервере.", "SSH agent authentication failed. Check the loaded keys and authorized_keys on the server.").into());
                 }
             }
             Auth::KeyFile => {
                 if !Path::new(&settings.key_file).is_file() {
-                    return Err("Файл приватного SSH-ключа не найден.".into());
+                    return Err(tr!(
+                        "Файл приватного SSH-ключа не найден.",
+                        "Private SSH key file not found."
+                    )
+                    .into());
                 }
                 session.userauth_pubkey_file(&settings.username, None, Path::new(&settings.key_file), if secret.is_empty(){None}else{Some(&secret)})
-                    .map_err(|_| "Вход по SSH-ключу не выполнен. Проверьте ключ, passphrase, формат ключа и authorized_keys на сервере.")?;
+                    .map_err(|_| tr!("Вход по SSH-ключу не выполнен. Проверьте ключ, passphrase, формат ключа и authorized_keys на сервере.", "SSH key authentication failed. Check the key, passphrase, key format and authorized_keys on the server."))?;
             }
             Auth::Password => {
                 if secret.is_empty() {
-                    return Err(
-                        "Введите пароль SSH или используйте сохранённый локальный пароль.".into(),
-                    );
+                    return Err(tr!(
+                        "Введите пароль SSH или используйте сохранённый локальный пароль.",
+                        "Enter the SSH password or use the locally saved password."
+                    )
+                    .into());
                 }
-                session.userauth_password(&settings.username, &secret).map_err(|_| "Вход по паролю SSH не выполнен. Проверьте пользователя и пароль; сервер должен разрешать этот метод.")?;
+                session.userauth_password(&settings.username, &secret).map_err(|_| tr!("Вход по паролю SSH не выполнен. Проверьте пользователя и пароль; сервер должен разрешать этот метод.", "SSH password authentication failed. Check the username, password and server settings."))?;
             }
         }
         if !session.authenticated() {
-            return Err("Сервер не подтвердил SSH-аутентификацию.".into());
+            return Err(tr!(
+                "Сервер не подтвердил SSH-аутентификацию.",
+                "The server did not confirm SSH authentication."
+            )
+            .into());
         }
-        let sftp = session
-            .sftp()
-            .map_err(|_| "Сервер не предоставил подсистему SFTP.")?;
+        let sftp = session.sftp().map_err(|_| {
+            tr!(
+                "Сервер не предоставил подсистему SFTP.",
+                "The server did not provide the SFTP subsystem."
+            )
+        })?;
         let directory = PathBuf::from(settings.directory);
         if !sftp
             .stat(&directory)
-            .map_err(|_| "Каталог SFTP недоступен. Создайте папку на сервере и проверьте права.")?
+            .map_err(|_| tr!("Каталог SFTP недоступен. Создайте папку на сервере и проверьте права.", "The SFTP folder is unavailable. Create it on the server and check permissions."))?
             .is_dir()
         {
-            return Err("Указанный путь SFTP не является каталогом.".into());
+            return Err(tr!("Указанный путь SFTP не является каталогом.", "The SFTP path is not a folder.").into());
         }
         Ok(Self { sftp, directory })
     }
 
     pub fn list(&self) -> Result<Vec<Snapshot>> {
-        let mut handle = self
-            .sftp
-            .opendir(&self.directory)
-            .map_err(|_| "Не удалось открыть каталог SFTP.")?;
+        let mut handle = self.sftp.opendir(&self.directory).map_err(|_| {
+            tr!(
+                "Не удалось открыть каталог SFTP.",
+                "Could not open the SFTP folder."
+            )
+        })?;
         let mut result = Vec::new();
         for _ in 0..20_000 {
             let (path, stat) = match handle.readdir() {
@@ -320,7 +443,13 @@ impl Remote {
                     result.sort_by(|a: &Snapshot, b| b.name.cmp(&a.name));
                     return Ok(result);
                 }
-                Err(_) => return Err("Не удалось прочитать каталог SFTP.".into()),
+                Err(_) => {
+                    return Err(tr!(
+                        "Не удалось прочитать каталог SFTP.",
+                        "Could not read the SFTP folder."
+                    )
+                    .into())
+                }
             };
             let Some(name) = path.to_str() else {
                 continue;
@@ -334,16 +463,24 @@ impl Remote {
                 .and_then(|mtime| gtk::glib::DateTime::from_unix_utc(mtime).ok())
                 .and_then(|time| time.format("%Y-%m-%d %H:%M UTC").ok())
                 .map(|s| s.to_string())
-                .unwrap_or_else(|| "Время не указано".into());
+                .unwrap_or_else(|| tr!("Время не указано", "Time unavailable").into());
             result.push(Snapshot {
                 name: name.into(),
                 modified,
             });
             if result.len() > 2000 {
-                return Err("В каталоге более 2000 наборов. Используйте отдельную папку.".into());
+                return Err(tr!(
+                    "В каталоге более 2000 наборов. Используйте отдельную папку.",
+                    "The folder contains more than 2,000 bundles. Use a separate folder."
+                )
+                .into());
             }
         }
-        Err("В каталоге слишком много файлов. Используйте отдельную папку для наборов.".into())
+        Err(tr!(
+            "В каталоге слишком много файлов. Используйте отдельную папку для наборов.",
+            "The folder contains too many files. Use a separate folder for bundles."
+        )
+        .into())
     }
 
     pub fn upload(&self, bytes: Vec<u8>) -> Result<String> {
@@ -354,7 +491,11 @@ impl Remote {
 
     fn put(&self, name: &str, bytes: &[u8]) -> Result<()> {
         if !transfer::snapshot_name(name) || bytes.len() > transfer::MAX_BYTES {
-            return Err("Некорректное имя или размер набора.".into());
+            return Err(tr!(
+                "Некорректное имя или размер набора.",
+                "Invalid bundle name or size."
+            )
+            .into());
         }
         let temporary = self.directory.join(format!(
             ".rdp-manager-{}.tmp",
@@ -371,20 +512,37 @@ impl Remote {
                     OpenType::File,
                 )
                 .map_err(|_| {
-                    "Не удалось создать временный файл SFTP. Проверьте права и свободное место."
+                    tr!("Не удалось создать временный файл SFTP. Проверьте права и свободное место.", "Could not create a temporary SFTP file. Check permissions and free space.")
                 })?;
-            file.write_all(bytes)
-                .map_err(|_| "Не удалось полностью отправить набор SFTP.")?;
+            file.write_all(bytes).map_err(|_| {
+                tr!(
+                    "Не удалось полностью отправить набор SFTP.",
+                    "Could not upload the complete SFTP bundle."
+                )
+            })?;
             if let Err(error) = file.fsync() {
                 if error.code() != ErrorCode::SFTP(8) {
-                    return Err("Не удалось подтвердить запись набора SFTP.".into());
+                    return Err(tr!(
+                        "Не удалось подтвердить запись набора SFTP.",
+                        "Could not confirm the SFTP write."
+                    )
+                    .into());
                 }
             }
-            file.close()
-                .map_err(|_| "Не удалось закрыть отправленный файл SFTP.")?;
+            file.close().map_err(|_| {
+                tr!(
+                    "Не удалось закрыть отправленный файл SFTP.",
+                    "Could not close the uploaded SFTP file."
+                )
+            })?;
             self.sftp
                 .rename(&temporary, &destination, Some(RenameFlags::empty()))
-                .map_err(|_| "Не удалось опубликовать набор SFTP. Существующий файл не заменён.")?;
+                .map_err(|_| {
+                    tr!(
+                        "Не удалось опубликовать набор SFTP. Существующий файл не заменён.",
+                        "Could not publish the SFTP bundle. The existing file was retained."
+                    )
+                })?;
             Ok(())
         })();
         if result.is_err() {
@@ -395,30 +553,45 @@ impl Remote {
 
     pub fn download(&self, name: &str) -> Result<Vec<u8>> {
         if !transfer::snapshot_name(name) {
-            return Err("Некорректное имя набора.".into());
+            return Err(tr!("Некорректное имя набора.", "Invalid bundle name.").into());
         }
         let path = self.directory.join(name);
         let stat = self
             .sftp
             .lstat(&path)
-            .map_err(|_| "Набор SFTP недоступен.")?;
+            .map_err(|_| tr!("Набор SFTP недоступен.", "The SFTP bundle is unavailable."))?;
         if !stat.is_file()
             || stat
                 .size
                 .is_some_and(|size| size > transfer::MAX_BYTES as u64)
         {
-            return Err("Набор SFTP не является обычным файлом или превышает 4 МиБ.".into());
+            return Err(tr!(
+                "Набор SFTP не является обычным файлом или превышает 4 МиБ.",
+                "The SFTP bundle is not a regular file or exceeds 4 MiB."
+            )
+            .into());
         }
-        let file = self
-            .sftp
-            .open(&path)
-            .map_err(|_| "Не удалось открыть набор SFTP.")?;
+        let file = self.sftp.open(&path).map_err(|_| {
+            tr!(
+                "Не удалось открыть набор SFTP.",
+                "Could not open the SFTP bundle."
+            )
+        })?;
         let mut bytes = Vec::new();
         file.take((transfer::MAX_BYTES + 1) as u64)
             .read_to_end(&mut bytes)
-            .map_err(|_| "Не удалось прочитать набор SFTP.")?;
+            .map_err(|_| {
+                tr!(
+                    "Не удалось прочитать набор SFTP.",
+                    "Could not read the SFTP bundle."
+                )
+            })?;
         if bytes.len() > transfer::MAX_BYTES {
-            return Err("Набор SFTP превышает 4 МиБ.".into());
+            return Err(tr!(
+                "Набор SFTP превышает 4 МиБ.",
+                "The SFTP bundle exceeds 4 MiB."
+            )
+            .into());
         }
         Ok(bytes)
     }

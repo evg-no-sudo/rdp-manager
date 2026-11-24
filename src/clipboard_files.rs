@@ -16,14 +16,17 @@ pub struct Entry {
 
 pub fn snapshot(paths: &[PathBuf]) -> Result<Vec<Entry>, &'static str> {
     if paths.is_empty() || paths.len() > MAX_ENTRIES {
-        return Err("Выберите не более 4096 файлов и папок.");
+        return Err(tr!(
+            "Выберите не более 4096 файлов и папок.",
+            "Select up to 4,096 files and folders."
+        ));
     }
     let mut entries = Vec::new();
     for path in paths {
-        let name = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .ok_or("Имя файла должно быть текстом UTF-8.")?;
+        let name = path.file_name().and_then(|name| name.to_str()).ok_or(tr!(
+            "Имя файла должно быть текстом UTF-8.",
+            "File names must use UTF-8."
+        ))?;
         visit(path, name.to_owned(), 0, &mut entries)?;
     }
     Ok(entries)
@@ -36,12 +39,15 @@ fn visit(
     entries: &mut Vec<Entry>,
 ) -> Result<(), &'static str> {
     if entries.len() >= MAX_ENTRIES || depth > 64 || remote_name.encode_utf16().count() > 259 {
-        return Err("Слишком много файлов или слишком длинное имя для RDP.");
+        return Err(tr!(
+            "Слишком много файлов или слишком длинное имя для RDP.",
+            "Too many files or a name is too long for RDP."
+        ));
     }
-    let component = path
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or("Имя файла должно быть текстом UTF-8.")?;
+    let component = path.file_name().and_then(|name| name.to_str()).ok_or(tr!(
+        "Имя файла должно быть текстом UTF-8.",
+        "File names must use UTF-8."
+    ))?;
     let stem = component
         .split('.')
         .next()
@@ -81,18 +87,31 @@ fn visit(
             .chars()
             .any(|ch| ch < ' ' || "<>:\"/\\|?*".contains(ch))
     {
-        return Err("Имя файла содержит символы, недопустимые в Windows.");
+        return Err(tr!(
+            "Имя файла содержит символы, недопустимые в Windows.",
+            "A file name contains characters Windows does not allow."
+        ));
     }
-    let metadata = fs::symlink_metadata(path).map_err(|_| "Не удалось прочитать файл.")?;
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| tr!("Не удалось прочитать файл.", "Could not read the file."))?;
     if metadata.file_type().is_symlink() {
-        return Err("Символические ссылки нельзя копировать через буфер RDP.");
+        return Err(tr!(
+            "Символические ссылки нельзя копировать через буфер RDP.",
+            "The RDP clipboard cannot copy symbolic links."
+        ));
     }
     let directory = metadata.is_dir();
     if !directory && !metadata.is_file() {
-        return Err("Через буфер RDP можно копировать только обычные файлы и папки.");
+        return Err(tr!(
+            "Через буфер RDP можно копировать только обычные файлы и папки.",
+            "The RDP clipboard supports regular files and folders only."
+        ));
     }
     if !directory && metadata.len() >= 2_147_483_648 {
-        return Err("Файл больше 2 ГБ пока нельзя копировать через буфер RDP.");
+        return Err(tr!(
+            "Файл больше 2 ГБ пока нельзя копировать через буфер RDP.",
+            "The RDP clipboard cannot yet transfer files over 2 GB."
+        ));
     }
     entries.push(Entry {
         source: path.to_path_buf(),
@@ -102,15 +121,17 @@ fn visit(
     });
     if directory {
         let mut children = fs::read_dir(path)
-            .map_err(|_| "Не удалось открыть папку.")?
+            .map_err(|_| tr!("Не удалось открыть папку.", "Could not open the folder."))?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|_| "Не удалось прочитать папку.")?;
+            .map_err(|_| tr!("Не удалось прочитать папку.", "Could not read the folder."))?;
         children.sort_by_key(|child| child.file_name());
         for child in children {
-            let name = child
-                .file_name()
-                .into_string()
-                .map_err(|_| "Имя файла должно быть текстом UTF-8.")?;
+            let name = child.file_name().into_string().map_err(|_| {
+                tr!(
+                    "Имя файла должно быть текстом UTF-8.",
+                    "File names must use UTF-8."
+                )
+            })?;
             visit(
                 &child.path(),
                 format!("{remote_name}\\{name}"),
