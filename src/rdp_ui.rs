@@ -144,7 +144,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let capture = gtk::ToggleButton::with_label("Захват клавиш");
     capture.set_tooltip_text(Some("Системные сочетания — удалённому ПК. Правый Ctrl освобождает клавиатуру. В Wayland требуется поддержка композитора."));
     capture.set_focus_on_click(false);
-    capture.set_active(true);
+    capture.set_sensitive(false);
     toolbar.append(&capture);
     let text_mode = gtk::CheckButton::with_label("Текст Unicode по локальной раскладке");
     let keyboard_mode = gtk::Label::new(Some("Раскладка: сервер"));
@@ -302,6 +302,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_status = status.downgrade();
     let weak_disconnect = disconnect.downgrade();
     let weak_cad = cad.downgrade();
+    let weak_capture = capture.downgrade();
     let weak_page = page.downgrade();
     let changed_certificate = Cell::new(false);
     let frame_control = control.clone();
@@ -358,12 +359,13 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         glib::ControlFlow::Continue
     });
     glib::timeout_add_local(Duration::from_millis(16), move || {
-        let (Some(root), Some(picture), Some(status), Some(disconnect), Some(cad)) = (
+        let (Some(root), Some(picture), Some(status), Some(disconnect), Some(cad), Some(capture)) = (
             weak_root.upgrade(),
             weak_picture.upgrade(),
             weak_status.upgrade(),
             weak_disconnect.upgrade(),
             weak_cad.upgrade(),
+            weak_capture.upgrade(),
         ) else {
             control.stop();
             return glib::ControlFlow::Break;
@@ -375,6 +377,8 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     picture.set_sensitive(true);
                     cad.set_sensitive(true);
                     picture.grab_focus();
+                    capture.set_sensitive(true);
+                    capture.set_active(true);
                     if let Some(id) = history {
                         let _ = state.store.history_connected(id);
                     }
@@ -437,6 +441,8 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     );
                     disconnect.set_sensitive(false);
                     cad.set_sensitive(false);
+                    capture.set_active(false);
+                    capture.set_sensitive(false);
                     picture.set_sensitive(false);
                     if let Some(page) = weak_page.upgrade() {
                         page.set_title(&format!("{} — завершён", profile.name));

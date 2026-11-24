@@ -109,6 +109,7 @@ pub fn refresh(state: &Rc<State>) {
                 }
             }
         }
+        list.invalidate_filter();
     }
 }
 

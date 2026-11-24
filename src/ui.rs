@@ -157,6 +157,10 @@ pub fn create_window(
     sidebar.append(&sidebar_header);
     let new_profile = gtk::Button::with_label("Новое подключение");
     sidebar.append(&new_profile);
+    let search = gtk::SearchEntry::builder()
+        .placeholder_text("Поиск подключений")
+        .build();
+    sidebar.append(&search);
     let transfer = gtk::gio::SimpleAction::new("transfer-profiles", None);
     let weak_window = window.downgrade();
     let transfer_state = state.clone();
@@ -203,6 +207,30 @@ pub fn create_window(
     list.set_valign(gtk::Align::Start);
     list.set_vexpand(false);
     list.add_css_class("boxed-list");
+    let search_for_filter = search.downgrade();
+    list.set_filter_func(move |row| {
+        let Some(search) = search_for_filter.upgrade() else {
+            return true;
+        };
+        let query = search.text().trim().to_lowercase();
+        if query.is_empty() {
+            return true;
+        }
+        row.downcast_ref::<adw::ActionRow>().is_some_and(|profile| {
+            profile.title().to_lowercase().contains(&query)
+                || profile
+                    .subtitle()
+                    .unwrap_or_default()
+                    .to_lowercase()
+                    .contains(&query)
+        })
+    });
+    let weak_list = list.downgrade();
+    search.connect_search_changed(move |_| {
+        if let Some(list) = weak_list.upgrade() {
+            list.invalidate_filter();
+        }
+    });
     let scroll = gtk::ScrolledWindow::builder()
         .hscrollbar_policy(gtk::PolicyType::Never)
         .vexpand(true)
