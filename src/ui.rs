@@ -5,7 +5,16 @@ type SessionStop = (gtk::glib::WeakRef<gtk::Widget>, Rc<dyn Fn()>);
 
 pub(crate) struct ProfileList {
     pub(crate) list: gtk::glib::WeakRef<gtk::ListBox>,
-    pub(crate) sort: gtk::glib::WeakRef<gtk::DropDown>,
+    pub(crate) sort: gtk::glib::WeakRef<gtk::gio::SimpleAction>,
+}
+
+impl ProfileList {
+    pub(crate) fn frequently(&self) -> bool {
+        self.sort
+            .upgrade()
+            .and_then(|sort| sort.state())
+            .is_some_and(|value| value.str() == Some("frequent"))
+    }
 }
 
 pub struct State {
@@ -215,6 +224,13 @@ fn create_session_window(
     sync_menu.append(Some("Через SFTP / SSH…"), Some("win.sftp"));
     menu.append_submenu(Some("Синхронизация подключений"), &sync_menu);
     menu.append(Some("История подключений…"), Some("win.history"));
+    let sort_menu = gtk::gio::Menu::new();
+    sort_menu.append(
+        Some("Часто используемые"),
+        Some("win.sort-profiles::frequent"),
+    );
+    sort_menu.append(Some("По алфавиту"), Some("win.sort-profiles::alphabetical"));
+    menu.append_submenu(Some("Сортировка подключений"), &sort_menu);
     let theme_menu = gtk::gio::Menu::new();
     theme_menu.append(Some("Системная"), Some("app.theme::system"));
     theme_menu.append(Some("Светлая"), Some("app.theme::light"));
@@ -280,9 +296,12 @@ fn create_session_window(
     list.set_valign(gtk::Align::Start);
     list.set_vexpand(false);
     list.add_css_class("boxed-list");
-    let sort = gtk::DropDown::from_strings(&["По алфавиту", "Часто используемые"]);
-    sort.set_tooltip_text(Some("Порядок подключений внутри папок"));
-    sidebar.append(&sort);
+    let sort = gtk::gio::SimpleAction::new_stateful(
+        "sort-profiles",
+        Some(gtk::glib::VariantTy::STRING),
+        &"frequent".to_variant(),
+    );
+    window.add_action(&sort);
     let search_for_filter = search.downgrade();
     let filter_state = state.clone();
     list.set_filter_func(move |row| {
@@ -322,7 +341,14 @@ fn create_session_window(
         false
     });
     let sort_state = state.clone();
-    sort.connect_selected_notify(move |_| crate::profiles_ui::refresh(&sort_state));
+    sort.connect_change_state(move |action, value| {
+        if let Some(value) =
+            value.filter(|value| matches!(value.str(), Some("frequent" | "alphabetical")))
+        {
+            action.set_state(value);
+            crate::profiles_ui::refresh(&sort_state);
+        }
+    });
     let weak_list = list.downgrade();
     search.connect_search_changed(move |_| {
         if let Some(list) = weak_list.upgrade() {

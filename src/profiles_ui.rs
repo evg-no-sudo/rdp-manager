@@ -123,7 +123,7 @@ pub fn refresh(state: &Rc<State>) {
         let Some(list) = view.list.upgrade() else {
             continue;
         };
-        let frequently = view.sort.upgrade().is_some_and(|sort| sort.selected() == 1);
+        let frequently = view.frequently();
         while let Some(child) = list.first_child() {
             list.remove(&child);
         }
