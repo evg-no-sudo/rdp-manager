@@ -64,6 +64,7 @@ extern "C" {
     fn rdp_manager_clipboard_receive_files(native: *mut Native, callback: ClipboardCallback);
     fn rdp_manager_connect(native: *mut Native) -> c_int;
     fn rdp_manager_poll(native: *mut Native) -> c_int;
+    fn rdp_manager_clipboard_bytes(native: *const Native) -> u64;
     fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
     fn rdp_manager_input(native: *mut Native, kind: u32, flags: u16, a: u16, b: u16) -> c_int;
     fn rdp_manager_cancel(native: *mut Native);
@@ -213,6 +214,15 @@ impl Control {
             }
         }
     }
+    pub fn clipboard_bytes(&self) -> u64 {
+        let Ok(native) = self.native.lock() else {
+            return 0;
+        };
+        native.map_or(0, |native| unsafe {
+            rdp_manager_clipboard_bytes(native as *const Native)
+        })
+    }
+
     pub fn is_stopped(&self) -> bool {
         self.stopped.load(Ordering::Acquire)
     }

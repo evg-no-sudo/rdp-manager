@@ -39,7 +39,7 @@ static atomic_bool clipboard_mount_in_use;
 typedef struct {
     HANDLE thread;
     char* path;
-    UINT64 size, offset;
+    UINT64 size, offset, generation;
     UINT32 length, stream_id;
     BYTE* data;
     BOOL success;
@@ -64,6 +64,8 @@ struct RdpBridge {
     char* clipboard_text;
     RdpClipboardFile* clipboard_files;
     ClipboardRead clipboard_reads[CLIPBOARD_READ_SLOTS];
+    UINT64 clipboard_generation;
+    atomic_uint_fast64_t clipboard_bytes;
     UINT32 clipboard_file_count;
     CRITICAL_SECTION clipboard_lock;
     atomic_int cancelled;
@@ -414,7 +416,8 @@ static BOOL clipboard_start_read(RdpBridge* bridge, const RdpClipboardFile* file
         ClipboardRead* read = &bridge->clipboard_reads[i];
         if (read->thread) continue;
         *read = (ClipboardRead){ .path = strdup(file->source), .size = file->size,
-            .offset = offset, .length = length, .stream_id = stream_id };
+            .offset = offset, .length = length, .stream_id = stream_id,
+            .generation = bridge->clipboard_generation };
         if (!read->path) return FALSE;
         read->thread = CreateThread(NULL, 0, clipboard_read_block, read, 0, NULL);
         if (read->thread) return TRUE;
@@ -446,6 +449,8 @@ static BOOL clipboard_flush_reads(RdpBridge* bridge) {
             };
             if (bridge->clipboard->ClientFileContentsResponse(bridge->clipboard, &response) != CHANNEL_RC_OK)
                 ok = FALSE;
+            else if (read.success && read.generation == bridge->clipboard_generation)
+                atomic_fetch_add(&bridge->clipboard_bytes, read.length);
         }
         clipboard_release_read(&read);
     }
@@ -486,6 +491,8 @@ static void clipboard_clear_files(RdpBridge* bridge) {
     free(bridge->clipboard_files);
     bridge->clipboard_files = NULL;
     bridge->clipboard_file_count = 0;
+    bridge->clipboard_generation++;
+    atomic_store(&bridge->clipboard_bytes, 0);
 }
 int rdp_manager_clipboard_set_text(RdpBridge* bridge, const char* text) {
     if (!bridge || !text || strlen(text) > 1024 * 1024) return 0;
@@ -818,6 +825,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     atomic_init(&bridge->connected, 0);
     atomic_init(&bridge->frame_dirty, 0);
     atomic_init(&bridge->paints, 0);
+    atomic_init(&bridge->clipboard_bytes, 0);
     atomic_init(&bridge->input_wakes, 0);
     atomic_init(&bridge->input_scans, 0);
     atomic_init(&bridge->input_unicode, 0);
@@ -1058,4 +1066,8 @@ void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity
         freerdp_settings_get_bool(settings, FreeRDP_NSCodec));
     if (gfx) LeaveCriticalSection(&gfx->mux);
     LeaveCriticalSection(&bridge->graphics_lock);
+}
+
+uint64_t rdp_manager_clipboard_bytes(const RdpBridge* bridge) {
+    return atomic_load(&bridge->clipboard_bytes);
 }

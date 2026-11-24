@@ -18,6 +18,7 @@ void rdp_manager_clipboard_receive_files(RdpBridge*, RdpClipboard);
 int rdp_manager_clipboard_set_files(RdpBridge*, const RdpClipboardFile*, uint32_t);
 int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);
+uint64_t rdp_manager_clipboard_bytes(const RdpBridge*);
 void rdp_manager_graphics_stats(RdpBridge*, char*, size_t);
 int rdp_manager_input(RdpBridge*, uint32_t kind, uint16_t flags, uint16_t a, uint16_t b);
 /* Thread-safe cancellation; wakes an active poll or aborts a pending connect. */
