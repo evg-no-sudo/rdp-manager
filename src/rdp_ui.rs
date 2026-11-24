@@ -39,6 +39,61 @@ fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
             .any(|mime| formats.contain_mime_type(mime))
 }
 const REMOTE_FILES_MIME: &str = "application/x-rdp-manager-remote-files";
+fn relay_files(
+    clipboard: &gdk::Clipboard,
+    picture: &gtk::Picture,
+    source_marker: &str,
+    sender: std::sync::Weak<rdp::Control>,
+) {
+    let formats = clipboard.formats();
+    if !picture.has_focus()
+        || !formats.contain_mime_type(REMOTE_FILES_MIME)
+        || formats.contain_mime_type(source_marker)
+    {
+        return;
+    }
+    let Some(provider) = clipboard.content() else {
+        return;
+    };
+    let clipboard_ref = clipboard.downgrade();
+    let picture_ref = picture.downgrade();
+    clipboard.read_value_async(
+        gdk::FileList::static_type(),
+        glib::Priority::DEFAULT,
+        None::<&gtk::gio::Cancellable>,
+        move |result| {
+            let Ok(value) = result else {
+                return;
+            };
+            let Ok(files) = value.get::<gdk::FileList>() else {
+                return;
+            };
+            let Some(paths): Option<Vec<_>> =
+                files.files().iter().map(|file| file.path()).collect()
+            else {
+                return;
+            };
+            glib::MainContext::default().spawn_local(async move {
+                let Ok(Ok(entries)) =
+                    gtk::gio::spawn_blocking(move || clipboard_files::snapshot(&paths)).await
+                else {
+                    return;
+                };
+                if picture_ref
+                    .upgrade()
+                    .is_some_and(|picture| picture.has_focus())
+                    && clipboard_ref.upgrade().and_then(|cb| cb.content()).as_ref()
+                        == Some(&provider)
+                {
+                    if let Some(sender) = sender.upgrade() {
+                        sender.clipboard_files(entries);
+                    }
+                }
+            });
+        },
+    );
+}
+
 fn offer_clipboard(
     clipboard: &gdk::Clipboard,
     sender: std::sync::Weak<rdp::Control>,
@@ -483,9 +538,38 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let clipboard = picture.display().clipboard();
     let expected_remote_text = Rc::new(RefCell::new(None::<String>));
     let weak_sender = std::sync::Arc::downgrade(&control);
+    let source_marker = format!("{REMOTE_FILES_MIME}-{}", glib::uuid_string_random());
+    let marker_on_change = source_marker.clone();
     let expected_on_change = expected_remote_text.clone();
+    let picture_on_change = picture.downgrade();
+    let sender_on_change = weak_sender.clone();
     let clipboard_handler = clipboard.connect_changed(move |clipboard| {
-        offer_clipboard(clipboard, weak_sender.clone(), expected_on_change.clone());
+        if clipboard.formats().contain_mime_type(REMOTE_FILES_MIME) {
+            if let Some(picture) = picture_on_change.upgrade() {
+                relay_files(
+                    clipboard,
+                    &picture,
+                    &marker_on_change,
+                    sender_on_change.clone(),
+                );
+            }
+        } else {
+            offer_clipboard(
+                clipboard,
+                sender_on_change.clone(),
+                expected_on_change.clone(),
+            );
+        }
+    });
+    let clipboard_on_focus = clipboard.clone();
+    let marker_on_focus = source_marker.clone();
+    picture.connect_has_focus_notify(move |picture| {
+        relay_files(
+            &clipboard_on_focus,
+            picture,
+            &marker_on_focus,
+            weak_sender.clone(),
+        );
     });
     let clipboard_on_close = clipboard.clone();
     let clipboard_handler = RefCell::new(Some(clipboard_handler));
@@ -698,6 +782,10 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                             ),
                             gdk::ContentProvider::for_bytes(
                                 REMOTE_FILES_MIME,
+                                &glib::Bytes::from_static(b""),
+                            ),
+                            gdk::ContentProvider::for_bytes(
+                                &source_marker,
                                 &glib::Bytes::from_static(b""),
                             ),
                         ]);

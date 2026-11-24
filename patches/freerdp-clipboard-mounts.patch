@@ -1,0 +1,25 @@
+--- a/client/common/client_cliprdr_file.c
++++ b/client/common/client_cliprdr_file.c
+@@ -2141,17 +2141,11 @@
+ {
+ 	WINPR_ASSERT(file);
+ 
+-	char base[64] = WINPR_C_ARRAY_INIT;
+-	(void)_snprintf(base, sizeof(base), "com.freerdp.client.cliprdr.%" PRIu32,
+-	                GetCurrentProcessId());
+-
+-	file->path = GetKnownSubPath(KNOWN_PATH_TEMP, base);
+-	if (!file->path)
+-		return FALSE;
+-
+-	if (!winpr_PathFileExists(file->path) && !winpr_PathMakePath(file->path, nullptr))
+-	{
+-		WLog_Print(file->log, WLOG_ERROR, "Failed to create directory '%s'", file->path);
++	file->path = GetKnownSubPath(KNOWN_PATH_TEMP, "rdp-manager-cliprdr-XXXXXX");
++	if (!file->path || !mkdtemp(file->path))
++	{
++		free(file->path);
++		file->path = nullptr;
+ 		return FALSE;
+ 	}
+ 	return TRUE;

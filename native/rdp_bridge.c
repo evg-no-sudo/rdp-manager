@@ -44,6 +44,7 @@ struct RdpBridge {
     CliprdrClientContext* clipboard;
     BOOL clipboard_ready;
     CliprdrFileContext* remote_files;
+    BOOL clipboard_mount_reserved;
     wClipboard* remote_clipboard;
     RdpClipboard files_callback;
     UINT32 requested_format, offered_format;
@@ -453,8 +454,11 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
         bridge->clipboard = clip;
         bridge->clipboard_ready = FALSE;
         clip->custom = bridge;
+        const BOOL separate_mounts =
+            strstr(freerdp_get_build_config(), "WITH_RDP_MANAGER_CLIPBOARD_MOUNTS=ON") != NULL;
         if (bridge->files_callback && access("/dev/fuse", R_OK | W_OK) == 0 &&
-            !atomic_exchange(&clipboard_mount_in_use, TRUE)) {
+            (separate_mounts || !atomic_exchange(&clipboard_mount_in_use, TRUE))) {
+            bridge->clipboard_mount_reserved = !separate_mounts;
             CliprdrFileContext* files = cliprdr_file_context_new(bridge);
             if (files && cliprdr_file_context_has_local_support(files))
                 bridge->remote_clipboard = ClipboardCreate();
@@ -466,7 +470,10 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
                 clip->custom = bridge;
                 clip->ServerFileContentsResponse = NULL;
             }
-            if (!bridge->remote_files) atomic_store(&clipboard_mount_in_use, FALSE);
+            if (!bridge->remote_files && bridge->clipboard_mount_reserved) {
+                atomic_store(&clipboard_mount_in_use, FALSE);
+                bridge->clipboard_mount_reserved = FALSE;
+            }
             /* Local offers use the bridge's own reader and do not negotiate locking. */
             clip->ServerLockClipboardData = NULL;
             clip->ServerUnlockClipboardData = NULL;
@@ -520,7 +527,10 @@ static void channel_disconnected(void* context, const ChannelDisconnectedEventAr
             cliprdr_file_context_free(bridge->remote_files);
             bridge->files_callback(bridge->opaque, "");
             bridge->remote_files = NULL;
-            atomic_store(&clipboard_mount_in_use, FALSE);
+            if (bridge->clipboard_mount_reserved) {
+                atomic_store(&clipboard_mount_in_use, FALSE);
+                bridge->clipboard_mount_reserved = FALSE;
+            }
         }
         if (bridge->remote_clipboard) ClipboardDestroy(bridge->remote_clipboard);
         bridge->remote_clipboard = NULL;

@@ -26,6 +26,9 @@ if [ -n "$(git -C "$source_dir" status --porcelain --untracked-files=no)" ]; the
 fi
 git -C "$source_dir" -c advice.detachedHead=false checkout --detach "$revision"
 [ "$(git -C "$source_dir" rev-parse HEAD)" = "$revision" ]
+patch="$root/patches/freerdp-clipboard-mounts.patch"
+git -C "$source_dir" apply "$patch"
+trap 'git -C "$source_dir" apply -R "$patch"' EXIT
 cmake -S "$source_dir" -B "$build_dir" \
     -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX="$prefix" \
     -DCMAKE_INSTALL_LIBDIR=lib -DCMAKE_INSTALL_RPATH='$ORIGIN' \
@@ -36,7 +39,7 @@ cmake -S "$source_dir" -B "$build_dir" \
     -DWITH_FFMPEG=ON -DWITH_VIDEO_FFMPEG=ON -DWITH_FFMPEG_HWACCEL=ON \
     -DWITH_SWSCALE=ON -DWITH_DSP_FFMPEG=OFF -DWITH_OPENH264=OFF \
     -DWITH_CUPS=OFF -DWITH_PCSC=OFF -DWITH_PULSE=ON -DWITH_ALSA=OFF \
-    -DWITH_OSS=OFF -DWITH_FUSE=ON -DWITH_JPEG=OFF -DWITH_AAD=OFF \
+    -DWITH_OSS=OFF -DWITH_FUSE=ON -DWITH_RDP_MANAGER_CLIPBOARD_MOUNTS=ON -DWITH_JPEG=OFF -DWITH_AAD=OFF \
     -DWITH_MANPAGES=OFF -DWITH_URIPARSER=OFF -DWITH_SYSTEMD=OFF
 cmake --build "$build_dir" --parallel "${RDP_MANAGER_BUILD_JOBS:-4}"
 cmake --install "$build_dir"
