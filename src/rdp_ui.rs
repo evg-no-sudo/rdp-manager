@@ -553,9 +553,25 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                             let _ = session_clipboard.set_content(None::<&gdk::ContentProvider>);
                         }
                     } else {
+                        let urls: Vec<_> = files.iter().map(|file| file.uri()).collect();
+                        let urls: Vec<_> = urls.iter().map(|uri| uri.as_str()).collect();
+                        let uri_list = format!("{}\r\n", urls.join("\r\n"));
+                        let copied_files = format!("copy\n{}", urls.join("\n"));
                         let provider = gdk::ContentProvider::new_union(&[
                             gdk::ContentProvider::for_value(
                                 &gdk::FileList::from_array(&files).to_value(),
+                            ),
+                            gdk::ContentProvider::for_bytes(
+                                "text/uri-list",
+                                &glib::Bytes::from_owned(uri_list),
+                            ),
+                            gdk::ContentProvider::for_bytes(
+                                "x-special/gnome-copied-files",
+                                &glib::Bytes::from_owned(copied_files.clone()),
+                            ),
+                            gdk::ContentProvider::for_bytes(
+                                "x-special/mate-copied-files",
+                                &glib::Bytes::from_owned(copied_files),
                             ),
                             gdk::ContentProvider::for_bytes(
                                 REMOTE_FILES_MIME,
@@ -564,6 +580,9 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                         ]);
                         if session_clipboard.set_content(Some(&provider)).is_ok() {
                             remote_file_provider = Some(provider);
+                            if std::env::var_os("RDP_MANAGER_TRACE_CLIPBOARD").is_some() {
+                                eprintln!("[rdp-clipboard] published {} remote items", files.len());
+                            }
                         }
                     }
                 }

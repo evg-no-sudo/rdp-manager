@@ -145,6 +145,10 @@ static void send_desktop_size(RdpBridge* bridge) {
     }
     LeaveCriticalSection(&bridge->graphics_lock);
 }
+static void clipboard_trace(const char* message) {
+    if (getenv("RDP_MANAGER_TRACE_CLIPBOARD"))
+        fprintf(stderr, "[rdp-clipboard] %s\n", message);
+}
 void rdp_manager_clipboard_receive_files(RdpBridge* bridge, RdpClipboard callback) {
     bridge->files_callback = callback;
 }
@@ -217,8 +221,13 @@ static UINT clipboard_server_list(CliprdrClientContext* context, const CLIPRDR_F
     }
     for (UINT32 i = 0; i < list->numFormats; i++) {
         const CLIPRDR_FORMAT* format = &list->formats[i];
-        if (bridge->remote_files && format->formatId && format->formatName &&
+        if (format->formatId && format->formatName &&
             strcmp(format->formatName, "FileGroupDescriptorW") == 0) {
+            if (!bridge->remote_files) {
+                clipboard_trace("server offers files but local FUSE receiver is unavailable");
+                continue;
+            }
+            clipboard_trace("requesting remote file list");
             bridge->offered_format = format->formatId;
             bridge->offered_files = TRUE;
             break;
@@ -267,6 +276,8 @@ static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_F
         !response->requestedFormatData)
         return clipboard_request_offer(context);
     UINT32 size = response->common.dataLen;
+    if (bridge->requested_files)
+        clipboard_trace("received remote file list response");
     if (bridge->requested_files && clipboard_valid_file_list(response->requestedFormatData, size)) {
         wClipboard* clipboard = bridge->remote_clipboard;
         UINT32 source = ClipboardRegisterFormat(clipboard, "FileGroupDescriptorW");
@@ -282,8 +293,9 @@ static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_F
                 if (terminated) bridge->files_callback(bridge->opaque, terminated);
                 free(terminated);
             }
+            if (!uris || !length) clipboard_trace("could not generate local file URLs");
             free(uris);
-        }
+        } else clipboard_trace("could not expose remote files through FUSE");
     } else if (!bridge->requested_files && size >= 2 && size <= 2 * 1024 * 1024 && size % 2 == 0) {
         WCHAR* wide = calloc(size / 2 + 1, sizeof(WCHAR));
         if (!wide) return CHANNEL_RC_NO_MEMORY;
@@ -292,6 +304,7 @@ static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_F
         free(wide);
         if (utf8) { bridge->clipboard_callback(bridge->opaque, utf8); free(utf8); }
     }
+    else if (bridge->requested_files) clipboard_trace("invalid remote file list");
     return CHANNEL_RC_OK;
 }
 static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRDR_FORMAT_DATA_REQUEST* request) {
@@ -446,6 +459,9 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
             clip->ServerLockClipboardData = NULL;
             clip->ServerUnlockClipboardData = NULL;
         }
+        if (bridge->files_callback)
+            clipboard_trace(bridge->remote_files ? "FUSE receiver initialized" :
+                "FUSE receiver unavailable (check /dev/fuse, FreeRDP build and concurrent sessions)");
         clip->MonitorReady = clipboard_ready;
         clip->ServerFormatList = clipboard_server_list;
         clip->ServerFormatDataRequest = clipboard_server_request;
