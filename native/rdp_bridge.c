@@ -554,9 +554,20 @@ static BOOL load_channels(freerdp* instance) {
     const char* audio = getenv("RDP_MANAGER_AUDIO");
     if ((!audio || strcmp(audio, "off") != 0) &&
         strstr(freerdp_get_build_config(), "WITH_PULSE=ON")) {
-        const char* const sound[] = { "rdpsnd", "sys:pulse" };
-        if (!freerdp_client_add_static_channel(ctx->settings, 2, sound) ||
-            !freerdp_client_add_dynamic_channel(ctx->settings, 2, sound)) return FALSE;
+        unsigned long latency = 150;
+        const char* override = getenv("RDP_MANAGER_AUDIO_LATENCY_MS");
+        if (override && *override) {
+            char* end = NULL;
+            unsigned long candidate = strtoul(override, &end, 10);
+            if (end != override && *end == '\0' && candidate <= 2000)
+                latency = candidate;
+        }
+        /* Give RDPSND room for packets that arrive in bursts and set the PulseAudio target. */
+        char latency_arg[32];
+        snprintf(latency_arg, sizeof(latency_arg), "latency:%lu", latency);
+        const char* const sound[] = { "rdpsnd", "sys:pulse", latency_arg };
+        if (!freerdp_client_add_static_channel(ctx->settings, ARRAYSIZE(sound), sound) ||
+            !freerdp_client_add_dynamic_channel(ctx->settings, ARRAYSIZE(sound), sound)) return FALSE;
     }
     if (!freerdp_client_load_addins(ctx->channels, ctx->settings)) return FALSE;
     bridge_of(ctx)->channel_loads++;
