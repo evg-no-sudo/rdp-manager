@@ -27,11 +27,23 @@
 #include <stdio.h>
 #include <string.h>
 #include <fcntl.h>
+#include <errno.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
 /* FreeRDP 3.32 uses a single FUSE mount path per process. */
 static atomic_bool clipboard_mount_in_use;
+
+#define CLIPBOARD_READ_SLOTS 8
+
+typedef struct {
+    HANDLE thread;
+    char* path;
+    UINT64 size, offset;
+    UINT32 length, stream_id;
+    BYTE* data;
+    BOOL success;
+} ClipboardRead;
 
 struct RdpBridge {
     freerdp* instance;
@@ -51,6 +63,7 @@ struct RdpBridge {
     BOOL requested_files, offered_files, request_superseded;
     char* clipboard_text;
     RdpClipboardFile* clipboard_files;
+    ClipboardRead clipboard_reads[CLIPBOARD_READ_SLOTS];
     UINT32 clipboard_file_count;
     CRITICAL_SECTION clipboard_lock;
     atomic_int cancelled;
@@ -367,42 +380,103 @@ static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRD
     free(file_data);
     return result;
 }
+static DWORD WINAPI clipboard_read_block(void* opaque) {
+    ClipboardRead* read = opaque;
+    int fd = open(read->path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW | O_NONBLOCK);
+    if (fd < 0) return 0;
+    struct stat info;
+    if (fstat(fd, &info) == 0 && S_ISREG(info.st_mode) && (UINT64)info.st_size == read->size) {
+        read->data = malloc(read->length ? read->length : 1);
+        if (read->data) {
+            size_t done = 0;
+            while (done < read->length) {
+                ssize_t length = pread(fd, read->data + done, read->length - done,
+                                       (off_t)(read->offset + done));
+                if (length < 0 && errno == EINTR) continue;
+                if (length <= 0) break;
+                done += (size_t)length;
+            }
+            read->success = done == read->length;
+        }
+    }
+    close(fd);
+    return 0;
+}
+static void clipboard_release_read(ClipboardRead* read) {
+    CloseHandle(read->thread);
+    free(read->path);
+    free(read->data);
+    *read = (ClipboardRead){0};
+}
+static BOOL clipboard_start_read(RdpBridge* bridge, const RdpClipboardFile* file,
+                                 UINT32 stream_id, UINT64 offset, UINT32 length) {
+    for (size_t i = 0; i < CLIPBOARD_READ_SLOTS; i++) {
+        ClipboardRead* read = &bridge->clipboard_reads[i];
+        if (read->thread) continue;
+        *read = (ClipboardRead){ .path = strdup(file->source), .size = file->size,
+            .offset = offset, .length = length, .stream_id = stream_id };
+        if (!read->path) return FALSE;
+        read->thread = CreateThread(NULL, 0, clipboard_read_block, read, 0, NULL);
+        if (read->thread) return TRUE;
+        free(read->path);
+        *read = (ClipboardRead){0};
+        return FALSE;
+    }
+    return FALSE;
+}
+static BOOL clipboard_flush_reads(RdpBridge* bridge) {
+    BOOL ok = TRUE;
+    for (size_t i = 0; i < CLIPBOARD_READ_SLOTS; i++) {
+        EnterCriticalSection(&bridge->clipboard_lock);
+        ClipboardRead* slot = &bridge->clipboard_reads[i];
+        if (!slot->thread || WaitForSingleObject(slot->thread, 0) != WAIT_OBJECT_0) {
+            LeaveCriticalSection(&bridge->clipboard_lock);
+            continue;
+        }
+        ClipboardRead read = *slot;
+        *slot = (ClipboardRead){0};
+        LeaveCriticalSection(&bridge->clipboard_lock);
+        if (bridge->clipboard) {
+            CLIPRDR_FILE_CONTENTS_RESPONSE response = {
+                .common = { .msgType = CB_FILECONTENTS_RESPONSE,
+                    .msgFlags = read.success ? CB_RESPONSE_OK : CB_RESPONSE_FAIL },
+                .streamId = read.stream_id,
+                .cbRequested = read.success ? read.length : 0,
+                .requestedData = read.success ? read.data : NULL,
+            };
+            if (bridge->clipboard->ClientFileContentsResponse(bridge->clipboard, &response) != CHANNEL_RC_OK)
+                ok = FALSE;
+        }
+        clipboard_release_read(&read);
+    }
+    return ok;
+}
 static UINT clipboard_file_request(CliprdrClientContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
     RdpBridge* bridge = clipboard_bridge(context);
     CLIPRDR_FILE_CONTENTS_RESPONSE response = { .common = { .msgType = CB_FILECONTENTS_RESPONSE,
         .msgFlags = CB_RESPONSE_FAIL }, .streamId = request->streamId };
-    BYTE* data = NULL;
+    BYTE size[8];
+    BOOL queued = FALSE;
     EnterCriticalSection(&bridge->clipboard_lock);
     if (bridge->clipboard_files && request->listIndex < bridge->clipboard_file_count) {
         const RdpClipboardFile* file = &bridge->clipboard_files[request->listIndex];
         if (request->dwFlags == FILECONTENTS_SIZE) {
-            data = malloc(8);
-            if (data) { for (int i = 0; i < 8; i++) data[i] = (BYTE)(file->size >> (8 * i));
-                response.common.msgFlags = CB_RESPONSE_OK; response.cbRequested = 8; }
+            for (size_t i = 0; i < sizeof(size); i++) size[i] = (BYTE)(file->size >> (8 * i));
+            response.common.msgFlags = CB_RESPONSE_OK;
+            response.cbRequested = sizeof(size);
+            response.requestedData = size;
         } else if (request->dwFlags == FILECONTENTS_RANGE && !file->directory &&
                    request->cbRequested <= 1024 * 1024) {
             UINT64 offset = ((UINT64)request->nPositionHigh << 32) | request->nPositionLow;
-            if (offset <= file->size) {
-                size_t length = request->cbRequested;
-                if (length > file->size - offset) length = (size_t)(file->size - offset);
-                data = malloc(length ? length : 1);
-                int fd = open(file->source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-                struct stat statbuf;
-                if (data && fd >= 0 && fstat(fd, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
-                    (UINT64)statbuf.st_size == file->size && offset <= (UINT64)INT64_MAX &&
-                    pread(fd, data, length, (off_t)offset) == (ssize_t)length) {
-                    response.common.msgFlags = CB_RESPONSE_OK;
-                    response.cbRequested = (UINT32)length;
-                }
-                if (fd >= 0) close(fd);
+            if (offset <= file->size && offset <= INT64_MAX) {
+                UINT32 length = request->cbRequested;
+                if (length > file->size - offset) length = (UINT32)(file->size - offset);
+                queued = clipboard_start_read(bridge, file, request->streamId, offset, length);
             }
         }
     }
     LeaveCriticalSection(&bridge->clipboard_lock);
-    response.requestedData = data;
-    UINT result = context->ClientFileContentsResponse(context, &response);
-    free(data);
-    return result;
+    return queued ? CHANNEL_RC_OK : context->ClientFileContentsResponse(context, &response);
 }
 static void clipboard_clear_files(RdpBridge* bridge) {
     for (UINT32 i = 0; i < bridge->clipboard_file_count; i++) {
@@ -852,6 +926,7 @@ int rdp_manager_poll(RdpBridge* bridge) {
     if (result == WAIT_FAILED) return -1;
     if (result == WAIT_OBJECT_0 + input_index) atomic_fetch_add(&bridge->input_wakes, 1);
     if (result != WAIT_TIMEOUT && result != WAIT_OBJECT_0 + input_index && !freerdp_check_event_handles(ctx)) return 0;
+    if (!clipboard_flush_reads(bridge)) return 0;
     return publish_frame(bridge, FALSE);
 }
 static int publish_frame(RdpBridge* bridge, BOOL boundary) {
@@ -950,6 +1025,12 @@ void rdp_manager_free(RdpBridge* bridge) {
     }
     if (bridge->input_event) CloseHandle(bridge->input_event);
     if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text)); free(bridge->clipboard_text); }
+    for (size_t i = 0; i < CLIPBOARD_READ_SLOTS; i++) {
+        ClipboardRead* read = &bridge->clipboard_reads[i];
+        if (!read->thread) continue;
+        (void)WaitForSingleObject(read->thread, INFINITE);
+        clipboard_release_read(read);
+    }
     clipboard_clear_files(bridge);
     DeleteCriticalSection(&bridge->clipboard_lock);
     DeleteCriticalSection(&bridge->graphics_lock);

@@ -14,54 +14,6 @@ pub struct Entry {
     pub directory: bool,
 }
 
-pub fn stage(
-    paths: &[PathBuf],
-    progress: &std::sync::atomic::AtomicU64,
-    total: &std::sync::atomic::AtomicU64,
-    cancelled: &std::sync::atomic::AtomicBool,
-) -> Result<(Vec<Entry>, tempfile::TempDir), &'static str> {
-    use std::io::{Read, Write};
-    use std::sync::atomic::Ordering::Relaxed;
-
-    let mut entries = snapshot(paths)?;
-    total.store(entries.iter().map(|entry| entry.size).sum(), Relaxed);
-    let directory = tempfile::tempdir().map_err(|_| "Не удалось создать временную папку.")?;
-    let mut buffer = vec![0; 256 * 1024];
-    for (index, entry) in entries.iter_mut().enumerate() {
-        if cancelled.load(Relaxed) {
-            return Err("Копирование отменено.");
-        }
-        if entry.directory {
-            continue;
-        }
-        let target = directory.path().join(index.to_string());
-        let mut input = fs::File::open(&entry.source).map_err(|_| "Исходный файл недоступен.")?;
-        let mut output =
-            fs::File::create(&target).map_err(|_| "Не удалось создать временный файл.")?;
-        let mut remaining = entry.size;
-        while remaining > 0 {
-            if cancelled.load(Relaxed) {
-                return Err("Копирование отменено.");
-            }
-            let count = remaining.min(buffer.len() as u64) as usize;
-            input.read_exact(&mut buffer[..count]).map_err(|error| {
-                if error.kind() == std::io::ErrorKind::TimedOut {
-                    "Исходный сервер 30 секунд не отвечал. Скопируйте файлы заново и повторите."
-                } else {
-                    "Не удалось прочитать файл из исходного сеанса."
-                }
-            })?;
-            output
-                .write_all(&buffer[..count])
-                .map_err(|_| "Не удалось записать временный файл. Проверьте свободное место.")?;
-            remaining -= count as u64;
-            progress.fetch_add(count as u64, Relaxed);
-        }
-        entry.source = target;
-    }
-    Ok((entries, directory))
-}
-
 pub fn snapshot(paths: &[PathBuf]) -> Result<Vec<Entry>, &'static str> {
     if paths.is_empty() || paths.len() > MAX_ENTRIES {
         return Err("Выберите не более 4096 файлов и папок.");
@@ -173,25 +125,6 @@ fn visit(
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn staged_files_survive_source_removal_and_report_bytes() {
-        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-        let source = tempfile::tempdir().unwrap();
-        let file = source.path().join("file.bin");
-        let payload = vec![17; 600_000];
-        fs::write(&file, &payload).unwrap();
-        let done = AtomicU64::new(0);
-        let total = AtomicU64::new(0);
-        let cancelled = AtomicBool::new(false);
-        let (entries, staging) = stage(&[file], &done, &total, &cancelled).unwrap();
-        drop(source);
-        assert_eq!(done.load(Ordering::Relaxed), payload.len() as u64);
-        assert_eq!(total.load(Ordering::Relaxed), payload.len() as u64);
-        assert_eq!(fs::read(&entries[0].source).unwrap(), payload);
-        drop(staging);
-        assert!(!entries[0].source.exists());
-    }
-
     #[test]
     fn collects_nested_folders_and_rejects_symlinks() {
         let dir = tempfile::tempdir().unwrap();

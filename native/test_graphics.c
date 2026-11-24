@@ -77,6 +77,10 @@ int main(int argc,char** argv){
     assert(clipboard_file_request(&clip,&file_size)==CHANNEL_RC_OK);
     CLIPRDR_FILE_CONTENTS_REQUEST file_range={.streamId=7,.listIndex=1,.dwFlags=FILECONTENTS_RANGE,.cbRequested=3};
     assert(clipboard_file_request(&clip,&file_range)==CHANNEL_RC_OK);
+    assert(avc444->clipboard_reads[0].thread);
+    assert(WaitForSingleObject(avc444->clipboard_reads[0].thread, 1000) == WAIT_OBJECT_0);
+    assert(clipboard_flush_reads(avc444));
+    assert(!avc444->clipboard_reads[0].thread);
     unlink(name);
     avc444->clipboard=NULL;
     rdp_manager_free(avc444);
