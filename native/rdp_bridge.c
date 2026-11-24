@@ -569,6 +569,16 @@ static BOOL load_channels(freerdp* instance) {
         if (!freerdp_client_add_static_channel(ctx->settings, ARRAYSIZE(sound), sound) ||
             !freerdp_client_add_dynamic_channel(ctx->settings, ARRAYSIZE(sound), sound)) return FALSE;
     }
+    const char* microphone = getenv("RDP_MANAGER_MICROPHONE");
+    if (microphone && strcmp(microphone, "1") == 0) {
+        if (strstr(freerdp_get_build_config(), "WITH_PULSE=ON")) {
+            const char* const input[] = { "audin", "sys:pulse" };
+            if (!freerdp_client_add_dynamic_channel(ctx->settings, ARRAYSIZE(input), input))
+                return FALSE;
+        } else {
+            fprintf(stderr, "[rdp-audio] Microphone requires FreeRDP with PulseAudio support.\n");
+        }
+    }
     if (!freerdp_client_load_addins(ctx->channels, ctx->settings)) return FALSE;
     bridge_of(ctx)->channel_loads++;
     return TRUE;
