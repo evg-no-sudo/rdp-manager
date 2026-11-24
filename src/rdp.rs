@@ -313,13 +313,13 @@ unsafe extern "C" fn clipboard_callback(opaque: *mut c_void, text: *const c_char
         }
     });
 }
-unsafe extern "C" fn clipboard_files_callback(opaque: *mut c_void, uris: *const c_char) {
+unsafe extern "C" fn clipboard_files_callback(opaque: *mut c_void, paths: *const c_char) {
     let _ = std::panic::catch_unwind(|| {
         let callbacks = unsafe { &*(opaque as *const Callbacks) };
-        if let Ok(uris) = unsafe { CStr::from_ptr(uris) }.to_str() {
+        if let Ok(paths) = unsafe { CStr::from_ptr(paths) }.to_str() {
             let _ = callbacks
                 .events
-                .send(Event::ClipboardFiles(uris.to_owned()));
+                .send(Event::ClipboardFiles(paths.to_owned()));
         }
     });
 }

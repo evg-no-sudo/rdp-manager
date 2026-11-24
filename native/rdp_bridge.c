@@ -280,21 +280,33 @@ static UINT clipboard_server_data(CliprdrClientContext* context, const CLIPRDR_F
         clipboard_trace("received remote file list response");
     if (bridge->requested_files && clipboard_valid_file_list(response->requestedFormatData, size)) {
         wClipboard* clipboard = bridge->remote_clipboard;
-        UINT32 source = ClipboardRegisterFormat(clipboard, "FileGroupDescriptorW");
-        UINT32 target = ClipboardRegisterFormat(clipboard, "text/uri-list");
-        if (source && target &&
-            cliprdr_file_context_update_server_data(bridge->remote_files, clipboard,
-                response->requestedFormatData, size) &&
-            ClipboardSetData(clipboard, source, response->requestedFormatData, size)) {
-            UINT32 length = 0;
-            char* uris = ClipboardGetData(clipboard, target, &length);
-            if (uris && length && length <= 1024 * 1024) {
-                char* terminated = strndup(uris, length);
-                if (terminated) bridge->files_callback(bridge->opaque, terminated);
-                free(terminated);
+        if (cliprdr_file_context_update_server_data(bridge->remote_files, clipboard,
+                response->requestedFormatData, size)) {
+            const char* base = ClipboardGetDelegate(clipboard)->basePath;
+            FILEDESCRIPTORW* files = NULL;
+            UINT32 count = 0;
+            if (base && !strchr(base, '\n') &&
+                cliprdr_parse_file_list(response->requestedFormatData, size, &files, &count) == CHANNEL_RC_OK) {
+                char* paths = NULL;
+                size_t length = 0;
+                FILE* output = open_memstream(&paths, &length);
+                if (output) {
+                    for (UINT32 i = 0; i < count; i++) {
+                        const WCHAR* wide = files[i].cFileName;
+                        size_t j = 0;
+                        while (wide[j] && wide[j] != '\\') j++;
+                        if (wide[j]) continue;
+                        char* name = ConvertWCharToUtf8Alloc(wide, NULL);
+                        if (name) fprintf(output, "%s/%s\n", base, name);
+                        free(name);
+                    }
+                    if (fclose(output) == 0 && length && length <= 1024 * 1024)
+                        bridge->files_callback(bridge->opaque, paths);
+                    else clipboard_trace("could not generate local file paths");
+                    free(paths);
+                }
             }
-            if (!uris || !length) clipboard_trace("could not generate local file URLs");
-            free(uris);
+            free(files);
         } else clipboard_trace("could not expose remote files through FUSE");
     } else if (!bridge->requested_files && size >= 2 && size <= 2 * 1024 * 1024 && size % 2 == 0) {
         WCHAR* wide = calloc(size / 2 + 1, sizeof(WCHAR));

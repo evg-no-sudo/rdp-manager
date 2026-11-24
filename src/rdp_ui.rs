@@ -540,11 +540,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     expected_remote_text.replace(Some(text.clone()));
                     session_clipboard.set_text(&text);
                 }
-                Event::ClipboardFiles(uris) => {
-                    let files: Vec<_> = uris
+                Event::ClipboardFiles(paths) => {
+                    let files: Vec<_> = paths
                         .lines()
-                        .filter(|line| line.starts_with("file://"))
-                        .map(gtk::gio::File::for_uri)
+                        .filter(|line| line.starts_with('/'))
+                        .map(gtk::gio::File::for_path)
                         .collect();
                     if files.is_empty() {
                         if remote_file_provider.take().is_some_and(|provider| {
