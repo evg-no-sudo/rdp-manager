@@ -19,13 +19,62 @@ use adw::prelude::*;
 
 const APP_ID: &str = "io.github.rdpmanager.RdpManager";
 
+fn theme_scheme(theme: &str) -> Option<adw::ColorScheme> {
+    match theme {
+        "system" => Some(adw::ColorScheme::Default),
+        "light" => Some(adw::ColorScheme::ForceLight),
+        "dark" => Some(adw::ColorScheme::ForceDark),
+        _ => None,
+    }
+}
+
+fn install_theme_action(app: &adw::Application) {
+    use gtk::{gio, glib};
+    use std::io::Write;
+
+    let config = glib::user_config_dir().join("rdp-manager");
+    let path = config.join("theme");
+    let saved = std::fs::read_to_string(&path).unwrap_or_default();
+    let (theme, scheme) = theme_scheme(saved.trim())
+        .map(|scheme| (saved.trim(), scheme))
+        .unwrap_or(("system", adw::ColorScheme::Default));
+    adw::StyleManager::default().set_color_scheme(scheme);
+    let action = gio::SimpleAction::new_stateful(
+        "theme",
+        Some(glib::VariantTy::STRING),
+        &theme.to_variant(),
+    );
+    action.connect_change_state(move |action, value| {
+        let Some(theme) = value.and_then(glib::Variant::str) else {
+            return;
+        };
+        let Some(scheme) = theme_scheme(theme) else {
+            return;
+        };
+        adw::StyleManager::default().set_color_scheme(scheme);
+        action.set_state(&theme.to_variant());
+        let save = || -> std::io::Result<()> {
+            std::fs::create_dir_all(&config)?;
+            let mut file = tempfile::NamedTempFile::new_in(&config)?;
+            writeln!(file, "{theme}")?;
+            file.persist(&path)?;
+            Ok(())
+        };
+        if let Err(error) = save() {
+            eprintln!("Не удалось сохранить тему: {error}");
+        }
+    });
+    app.add_action(&action);
+}
+
 fn main() -> gtk::glib::ExitCode {
     if std::env::args().skip(1).any(|arg| arg == "--diagnostics") {
         println!("{}", rdp::diagnostics());
         return gtk::glib::ExitCode::SUCCESS;
     }
     let app = adw::Application::builder().application_id(APP_ID).build();
-    app.connect_startup(|_| {
+    app.connect_startup(|app| {
+        install_theme_action(app);
         if let (Some(display), Some(path)) = (
             gtk::gdk::Display::default(),
             std::env::var_os("RDP_MANAGER_ICON_PATH"),

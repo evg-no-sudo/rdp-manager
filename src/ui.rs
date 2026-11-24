@@ -162,9 +162,14 @@ fn create_session_window(
     sync_menu.append(Some("Через SFTP / SSH…"), Some("win.sftp"));
     menu.append_submenu(Some("Синхронизация подключений"), &sync_menu);
     menu.append(Some("История подключений…"), Some("win.history"));
+    let theme_menu = gtk::gio::Menu::new();
+    theme_menu.append(Some("Системная"), Some("app.theme::system"));
+    theme_menu.append(Some("Светлая"), Some("app.theme::light"));
+    theme_menu.append(Some("Тёмная"), Some("app.theme::dark"));
+    menu.append_submenu(Some("Тема оформления"), &theme_menu);
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text("Импорт, синхронизация и история подключений")
+        .tooltip_text("Дополнительные действия")
         .menu_model(&menu)
         .build();
     more.add_css_class("flat");
