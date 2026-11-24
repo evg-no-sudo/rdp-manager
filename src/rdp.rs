@@ -1,6 +1,8 @@
 //! One FreeRDP owner thread per session. GTK never owns a FreeRDP context.
+use crate::clipboard_files;
 use std::{
     ffi::{c_char, c_int, c_void, CStr, CString},
+    os::unix::ffi::OsStrExt,
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc::{self, Receiver, SyncSender, TrySendError},
@@ -13,6 +15,13 @@ use zeroize::{Zeroize, Zeroizing};
 #[repr(C)]
 struct Native {
     _private: [u8; 0],
+}
+#[repr(C)]
+struct NativeClipboardFile {
+    source: *const c_char,
+    remote_name: *const c_char,
+    size: u64,
+    directory: c_int,
 }
 type FrameCallback = unsafe extern "C" fn(*mut c_void, *const u8, u32, u32, u32) -> c_int;
 type CertCallback = unsafe extern "C" fn(
@@ -47,6 +56,11 @@ extern "C" {
         clipboard: ClipboardCallback,
     ) -> *mut Native;
     fn rdp_manager_clipboard_set_text(native: *mut Native, text: *const c_char) -> c_int;
+    fn rdp_manager_clipboard_set_files(
+        native: *mut Native,
+        files: *const NativeClipboardFile,
+        count: u32,
+    ) -> c_int;
     fn rdp_manager_connect(native: *mut Native) -> c_int;
     fn rdp_manager_poll(native: *mut Native) -> c_int;
     fn rdp_manager_graphics_stats(native: *mut Native, output: *mut c_char, capacity: usize);
@@ -181,7 +195,11 @@ pub struct Control {
     motion: Mutex<Option<Input>>,
     frame: Mutex<Option<Frame>>,
     resize: Mutex<Option<(u16, u16)>>,
-    clipboard: Mutex<Option<String>>,
+    clipboard: Mutex<Option<ClipboardOffer>>,
+}
+enum ClipboardOffer {
+    Text(String),
+    Files(Vec<clipboard_files::Entry>),
 }
 impl Control {
     fn wake_input(&self) {
@@ -259,7 +277,16 @@ impl Control {
             return;
         }
         if let Ok(mut pending) = self.clipboard.lock() {
-            *pending = Some(text);
+            *pending = Some(ClipboardOffer::Text(text));
+        }
+        self.wake_input();
+    }
+    pub fn clipboard_files(&self, files: Vec<clipboard_files::Entry>) {
+        if files.is_empty() || self.stopped.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut pending) = self.clipboard.lock() {
+            *pending = Some(ClipboardOffer::Files(files));
         }
         self.wake_input();
     }
@@ -582,15 +609,48 @@ fn run(
                     rdp_manager_input(native, 6, 0, w, h);
                 }
             }
-            if let Some(text) = control
+            if let Some(offer) = control
                 .clipboard
                 .lock()
                 .ok()
                 .and_then(|mut pending| pending.take())
             {
-                if let Ok(text) = CString::new(text) {
-                    unsafe {
-                        rdp_manager_clipboard_set_text(native, text.as_ptr());
+                match offer {
+                    ClipboardOffer::Text(text) => {
+                        if let Ok(text) = CString::new(text) {
+                            unsafe {
+                                rdp_manager_clipboard_set_text(native, text.as_ptr());
+                            }
+                        }
+                    }
+                    ClipboardOffer::Files(files) => {
+                        let paths = files
+                            .iter()
+                            .map(|f| CString::new(f.source.as_os_str().as_bytes()))
+                            .collect::<Result<Vec<_>, _>>();
+                        let names = files
+                            .iter()
+                            .map(|f| CString::new(f.remote_name.as_bytes()))
+                            .collect::<Result<Vec<_>, _>>();
+                        if let (Ok(paths), Ok(names)) = (paths, names) {
+                            let native_files: Vec<_> = files
+                                .iter()
+                                .zip(paths.iter().zip(names.iter()))
+                                .map(|(f, (path, name))| NativeClipboardFile {
+                                    source: path.as_ptr(),
+                                    remote_name: name.as_ptr(),
+                                    size: f.size,
+                                    directory: i32::from(f.directory),
+                                })
+                                .collect();
+                            unsafe {
+                                rdp_manager_clipboard_set_files(
+                                    native,
+                                    native_files.as_ptr(),
+                                    native_files.len() as u32,
+                                );
+                            }
+                        }
                     }
                 }
             }

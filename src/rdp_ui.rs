@@ -1,4 +1,5 @@
 use crate::{
+    clipboard_files,
     rdp::{self, CertificateDecision, Config, Event},
     rdp_input, secrets,
     store::Profile,
@@ -36,6 +37,105 @@ fn clipboard_has_text(clipboard: &gdk::Clipboard) -> bool {
         || ["text/plain;charset=utf-8", "text/plain", "UTF8_STRING"]
             .iter()
             .any(|mime| formats.contain_mime_type(mime))
+}
+fn offer_clipboard(
+    clipboard: &gdk::Clipboard,
+    sender: std::sync::Weak<rdp::Control>,
+    expected: Rc<RefCell<Option<String>>>,
+) {
+    if clipboard
+        .formats()
+        .contains_type(gdk::FileList::static_type())
+    {
+        clipboard.read_value_async(
+            gdk::FileList::static_type(),
+            glib::Priority::DEFAULT,
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                let Ok(value) = result else {
+                    return;
+                };
+                let Ok(files) = value.get::<gdk::FileList>() else {
+                    return;
+                };
+                let paths: Option<Vec<_>> = files.files().iter().map(|file| file.path()).collect();
+                let Some(paths) = paths else {
+                    return;
+                };
+                glib::MainContext::default().spawn_local(async move {
+                    if let Ok(Ok(entries)) =
+                        gtk::gio::spawn_blocking(move || clipboard_files::snapshot(&paths)).await
+                    {
+                        if let Some(sender) = sender.upgrade() {
+                            sender.clipboard_files(entries);
+                        }
+                    }
+                });
+            },
+        );
+    } else if [
+        "x-special/gnome-copied-files",
+        "x-special/mate-copied-files",
+        "text/uri-list",
+    ]
+    .iter()
+    .any(|mime| clipboard.formats().contain_mime_type(mime))
+    {
+        clipboard.read_async(
+            &[
+                "x-special/gnome-copied-files",
+                "x-special/mate-copied-files",
+                "text/uri-list",
+            ],
+            glib::Priority::DEFAULT,
+            None::<&gtk::gio::Cancellable>,
+            move |result| {
+                let Ok((stream, _)) = result else {
+                    return;
+                };
+                glib::MainContext::default().spawn_local(async move {
+                    let Ok(bytes) = stream
+                        .read_bytes_future(1024 * 1024, glib::Priority::DEFAULT)
+                        .await
+                    else {
+                        return;
+                    };
+                    let Ok(text) = std::str::from_utf8(bytes.as_ref()) else {
+                        return;
+                    };
+                    let paths: Vec<_> = text
+                        .lines()
+                        .filter(|line| line.starts_with("file://"))
+                        .filter_map(|line| gtk::gio::File::for_uri(line).path())
+                        .collect();
+                    if paths.is_empty() {
+                        return;
+                    }
+                    if let Ok(Ok(entries)) =
+                        gtk::gio::spawn_blocking(move || clipboard_files::snapshot(&paths)).await
+                    {
+                        if let Some(sender) = sender.upgrade() {
+                            sender.clipboard_files(entries);
+                        }
+                    }
+                });
+            },
+        );
+    } else if clipboard_has_text(clipboard) {
+        clipboard.read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
+            let Ok(Some(text)) = result else {
+                return;
+            };
+            let text = text.to_string();
+            if expected.borrow().as_ref() == Some(&text) {
+                return;
+            }
+            expected.borrow_mut().take();
+            if let Some(sender) = sender.upgrade() {
+                sender.clipboard_text(text);
+            }
+        });
+    }
 }
 fn connect_saved(
     parent: &adw::ApplicationWindow,
@@ -270,24 +370,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let weak_sender = std::sync::Arc::downgrade(&control);
     let expected_on_change = expected_remote_text.clone();
     let clipboard_handler = clipboard.connect_changed(move |clipboard| {
-        if !clipboard_has_text(clipboard) {
-            return;
-        }
-        let weak_sender = weak_sender.clone();
-        let expected = expected_on_change.clone();
-        clipboard.read_text_async(None::<&gtk::gio::Cancellable>, move |result| {
-            let Ok(Some(text)) = result else {
-                return;
-            };
-            let text = text.to_string();
-            if expected.borrow().as_ref() == Some(&text) {
-                return;
-            }
-            expected.borrow_mut().take();
-            if let Some(sender) = weak_sender.upgrade() {
-                sender.clipboard_text(text);
-            }
-        });
+        offer_clipboard(clipboard, weak_sender.clone(), expected_on_change.clone());
     });
     let clipboard_on_close = clipboard.clone();
     let clipboard_handler = RefCell::new(Some(clipboard_handler));
@@ -443,18 +526,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     capture.set_active(true);
                     let sender = clipboard_sender.clone();
                     let expected = expected_on_connect.clone();
-                    if clipboard_has_text(&session_clipboard) {
-                        session_clipboard.read_text_async(
-                            None::<&gtk::gio::Cancellable>,
-                            move |result| {
-                                if let (Some(sender), Ok(Some(text))) = (sender.upgrade(), result) {
-                                    if expected.borrow().as_deref() != Some(text.as_str()) {
-                                        sender.clipboard_text(text.to_string());
-                                    }
-                                }
-                            },
-                        );
-                    }
+                    offer_clipboard(&session_clipboard, sender, expected);
                     if let Some(id) = history {
                         let _ = state.store.history_connected(id);
                     }

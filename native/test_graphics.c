@@ -1,7 +1,8 @@
 /* In-process test of the real FreeRDP EGFX/GDI callbacks. Loopback handshake for real GDI/cache setup; no screen capture. */
 #include "rdp_bridge.c"
 #include <assert.h>
-typedef struct { unsigned count; BYTE expected; int busy; char clipboard[128]; unsigned formats; } Probe;
+#include <unistd.h>
+typedef struct { unsigned count; BYTE expected; int busy; char clipboard[128]; unsigned formats; int file_mode; } Probe;
 static int capture(void* opaque,const uint8_t* data,uint32_t w,uint32_t h,uint32_t stride){
     Probe* p=opaque;
     if(p->busy)return 2;
@@ -17,7 +18,8 @@ static UINT clip_caps(CliprdrClientContext* ctx,const CLIPRDR_CAPABILITIES* caps
 static UINT clip_list(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_LIST* list){Probe* p=((RdpBridge*)ctx->custom)->opaque;p->formats=list->numFormats;return CHANNEL_RC_OK;}
 static UINT clip_list_reply(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_LIST_RESPONSE* response){(void)ctx;assert(response->common.msgFlags==CB_RESPONSE_OK);return CHANNEL_RC_OK;}
 static UINT clip_data_request(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_DATA_REQUEST* request){(void)ctx;assert(request->requestedFormatId==CF_UNICODETEXT);return CHANNEL_RC_OK;}
-static UINT clip_data_reply(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_DATA_RESPONSE* response){(void)ctx;assert(response->common.msgFlags==CB_RESPONSE_OK);assert(response->common.dataLen==14);assert(((WCHAR*)response->requestedFormatData)[0]==0x41f);return CHANNEL_RC_OK;}
+static UINT clip_data_reply(CliprdrClientContext* ctx,const CLIPRDR_FORMAT_DATA_RESPONSE* response){Probe* p=((RdpBridge*)ctx->custom)->opaque;assert(response->common.msgFlags==CB_RESPONSE_OK);if(p->file_mode){FILEDESCRIPTORW* files=NULL;UINT32 count=0;assert(cliprdr_parse_file_list(response->requestedFormatData,response->common.dataLen,&files,&count)==0);assert(count==2);assert(files[0].dwFileAttributes&FILE_ATTRIBUTE_DIRECTORY);assert(files[1].nFileSizeLow==3);assert(files[1].cFileName[0]=='f');free(files);}else{assert(response->common.dataLen==14);assert(((WCHAR*)response->requestedFormatData)[0]==0x41f);}return CHANNEL_RC_OK;}
+static UINT clip_file_reply(CliprdrClientContext* ctx,const CLIPRDR_FILE_CONTENTS_RESPONSE* response){(void)ctx;assert(response->common.msgFlags==CB_RESPONSE_OK);assert(response->streamId==7);if(response->cbRequested==3)assert(memcmp(response->requestedData,"abc",3)==0);else{assert(response->cbRequested==8);assert(response->requestedData[0]==3);}return CHANNEL_RC_OK;}
 static void fill(RdpgfxClientContext* gfx,UINT16 top,UINT16 bottom,BYTE value){
     RECTANGLE_16 rect={0,top,640,bottom};
     RDPGFX_SOLID_FILL_PDU cmd={.surfaceId=1,.fillRectCount=1,.fillRects=&rect};
@@ -51,7 +53,7 @@ int main(int argc,char** argv){
     assert(freerdp_device_collection_find_type(shared->instance->context->settings,RDPDR_DTYP_FILESYSTEM));
     rdp_manager_free(shared);
     CliprdrClientContext clip={.custom=avc444,.ClientCapabilities=clip_caps,.ClientFormatList=clip_list,
-        .ClientFormatListResponse=clip_list_reply,.ClientFormatDataRequest=clip_data_request,.ClientFormatDataResponse=clip_data_reply};
+        .ClientFormatListResponse=clip_list_reply,.ClientFormatDataRequest=clip_data_request,.ClientFormatDataResponse=clip_data_reply,.ClientFileContentsResponse=clip_file_reply};
     avc444->clipboard=&clip;
     CLIPRDR_MONITOR_READY monitor={0};
     assert(clipboard_ready(&clip,&monitor)==CHANNEL_RC_OK&&probe.formats==0);
@@ -64,6 +66,18 @@ int main(int argc,char** argv){
     WCHAR remote[]={0x41f,0x440,0x438,0x432,0x435,0x442,0};
     CLIPRDR_FORMAT_DATA_RESPONSE reply={.common={.msgFlags=CB_RESPONSE_OK,.dataLen=sizeof(remote)},.requestedFormatData=(BYTE*)remote};
     assert(clipboard_server_data(&clip,&reply)==CHANNEL_RC_OK&&strcmp(probe.clipboard,"Привет")==0);
+    char name[]="/tmp/rdp-clip-test-XXXXXX";
+    int fd=mkstemp(name);assert(fd>=0);assert(write(fd,"abc",3)==3);close(fd);
+    RdpClipboardFile files[]={ {"/tmp","folder",0,1},{name,"folder\\file.txt",3,0} };
+    probe.file_mode=1;
+    assert(rdp_manager_clipboard_set_files(avc444,files,2)&&probe.formats==1);
+    CLIPRDR_FORMAT_DATA_REQUEST file_list={.requestedFormatId=0xC001};
+    assert(clipboard_server_request(&clip,&file_list)==CHANNEL_RC_OK);
+    CLIPRDR_FILE_CONTENTS_REQUEST file_size={.streamId=7,.listIndex=1,.dwFlags=FILECONTENTS_SIZE};
+    assert(clipboard_file_request(&clip,&file_size)==CHANNEL_RC_OK);
+    CLIPRDR_FILE_CONTENTS_REQUEST file_range={.streamId=7,.listIndex=1,.dwFlags=FILECONTENTS_RANGE,.cbRequested=3};
+    assert(clipboard_file_request(&clip,&file_range)==CHANNEL_RC_OK);
+    unlink(name);
     avc444->clipboard=NULL;
     rdp_manager_free(avc444);
     rdp_manager_prepare_input(bridge);

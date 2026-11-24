@@ -7,12 +7,14 @@ typedef struct RdpBridge RdpBridge;
 typedef int (*RdpFrame)(void*, const uint8_t*, uint32_t, uint32_t, uint32_t);
 typedef int (*RdpCertificate)(void*, int, const char*, uint16_t, const char*, const char*, const char*, const char*, const char*);
 typedef void (*RdpClipboard)(void*, const char*);
+typedef struct { const char* source; const char* remote_name; uint64_t size; int directory; } RdpClipboardFile;
 int rdp_manager_initialize(void);
 const char* rdp_manager_build_config(void);
 RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
                           const char* password, const char* domain, const char* shared_folder, uint32_t width, uint32_t height,
                           uint32_t keyboard_layout, uint32_t quality, void* opaque, RdpFrame frame, RdpCertificate certificate, RdpClipboard clipboard);
 int rdp_manager_clipboard_set_text(RdpBridge*, const char*);
+int rdp_manager_clipboard_set_files(RdpBridge*, const RdpClipboardFile*, uint32_t);
 int rdp_manager_connect(RdpBridge*);
 int rdp_manager_poll(RdpBridge*);
 void rdp_manager_graphics_stats(RdpBridge*, char*, size_t);

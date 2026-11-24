@@ -19,10 +19,15 @@
 #include <winpr/ssl.h>
 #include <winpr/user.h>
 #include <winpr/string.h>
+#include <winpr/file.h>
+#include <winpr/shell.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 struct RdpBridge {
     freerdp* instance;
@@ -35,6 +40,8 @@ struct RdpBridge {
     CliprdrClientContext* clipboard;
     BOOL clipboard_ready;
     char* clipboard_text;
+    RdpClipboardFile* clipboard_files;
+    UINT32 clipboard_file_count;
     CRITICAL_SECTION clipboard_lock;
     atomic_int cancelled;
     atomic_int connected;
@@ -131,10 +138,12 @@ static void send_desktop_size(RdpBridge* bridge) {
 }
 static UINT clipboard_advertise(RdpBridge* bridge) {
     if (!bridge->clipboard || !bridge->clipboard_ready) return CHANNEL_RC_OK;
-    CLIPRDR_FORMAT format = { .formatId = CF_UNICODETEXT };
+    CLIPRDR_FORMAT format = bridge->clipboard_files
+        ? (CLIPRDR_FORMAT){ .formatId = 0xC001, .formatName = "FileGroupDescriptorW" }
+        : (CLIPRDR_FORMAT){ .formatId = CF_UNICODETEXT };
     CLIPRDR_FORMAT_LIST list = { .common = { .msgType = CB_FORMAT_LIST },
-                                 .numFormats = bridge->clipboard_text ? 1 : 0,
-                                 .formats = bridge->clipboard_text ? &format : NULL };
+                                 .numFormats = bridge->clipboard_text || bridge->clipboard_files ? 1 : 0,
+                                 .formats = bridge->clipboard_text || bridge->clipboard_files ? &format : NULL };
     return bridge->clipboard->ClientFormatList(bridge->clipboard, &list);
 }
 static UINT clipboard_ready(CliprdrClientContext* context, const CLIPRDR_MONITOR_READY* ready) {
@@ -144,7 +153,8 @@ static UINT clipboard_ready(CliprdrClientContext* context, const CLIPRDR_MONITOR
         .capabilitySetType = CB_CAPSTYPE_GENERAL,
         .capabilitySetLength = CB_CAPSTYPE_GENERAL_LEN,
         .version = CB_CAPS_VERSION_2,
-        .generalFlags = CB_USE_LONG_FORMAT_NAMES
+        .generalFlags = CB_USE_LONG_FORMAT_NAMES | CB_STREAM_FILECLIP_ENABLED |
+                        CB_FILECLIP_NO_FILE_PATHS
     };
     CLIPRDR_CAPABILITIES caps = { .common = { .msgType = CB_CLIP_CAPS },
         .cCapabilitiesSets = 1, .capabilitySets = (CLIPRDR_CAPABILITY_SET*)&general };
@@ -184,27 +194,125 @@ static UINT clipboard_server_request(CliprdrClientContext* context, const CLIPRD
     RdpBridge* bridge = context->custom;
     CLIPRDR_FORMAT_DATA_RESPONSE response = { .common = { .msgType = CB_FORMAT_DATA_RESPONSE } };
     WCHAR* wide = NULL;
+    BYTE* file_data = NULL;
+    UINT32 file_length = 0;
     size_t chars = 0;
     EnterCriticalSection(&bridge->clipboard_lock);
     if (request->requestedFormatId == CF_UNICODETEXT && bridge->clipboard_text)
         wide = ConvertUtf8ToWCharAlloc(bridge->clipboard_text, &chars);
+    else if (request->requestedFormatId == 0xC001 && bridge->clipboard_files) {
+        FILEDESCRIPTORW* descriptors = calloc(bridge->clipboard_file_count, sizeof(*descriptors));
+        if (descriptors) {
+            BOOL valid = TRUE;
+            for (UINT32 i = 0; i < bridge->clipboard_file_count; i++) {
+                FILEDESCRIPTORW* d = &descriptors[i];
+                d->dwFlags = FD_ATTRIBUTES | FD_FILESIZE | FD_UNICODE;
+                d->dwFileAttributes = bridge->clipboard_files[i].directory ? FILE_ATTRIBUTE_DIRECTORY : FILE_ATTRIBUTE_NORMAL;
+                d->nFileSizeHigh = (UINT32)(bridge->clipboard_files[i].size >> 32);
+                d->nFileSizeLow = (UINT32)bridge->clipboard_files[i].size;
+                size_t count = 0;
+                WCHAR* name = ConvertUtf8ToWCharAlloc(bridge->clipboard_files[i].remote_name, &count);
+                if (!name || count > 259) valid = FALSE;
+                else memcpy(d->cFileName, name, (count + 1) * sizeof(WCHAR));
+                free(name);
+                if (!valid) break;
+            }
+            if (valid && cliprdr_serialize_file_list(descriptors, bridge->clipboard_file_count,
+                                                     &file_data, &file_length) != CHANNEL_RC_OK) file_data = NULL;
+            free(descriptors);
+        }
+    }
     LeaveCriticalSection(&bridge->clipboard_lock);
-    if (wide && chars < 1024 * 1024) {
+    if (file_data) {
+        response.common.msgFlags = CB_RESPONSE_OK;
+        response.common.dataLen = file_length;
+        response.requestedFormatData = file_data;
+    } else if (wide && chars < 1024 * 1024) {
         response.common.msgFlags = CB_RESPONSE_OK;
         response.common.dataLen = (UINT32)((chars + 1) * sizeof(WCHAR));
         response.requestedFormatData = (const BYTE*)wide;
     } else response.common.msgFlags = CB_RESPONSE_FAIL;
     UINT result = context->ClientFormatDataResponse(context, &response);
     free(wide);
+    free(file_data);
     return result;
+}
+static UINT clipboard_file_request(CliprdrClientContext* context, const CLIPRDR_FILE_CONTENTS_REQUEST* request) {
+    RdpBridge* bridge = context->custom;
+    CLIPRDR_FILE_CONTENTS_RESPONSE response = { .common = { .msgType = CB_FILECONTENTS_RESPONSE,
+        .msgFlags = CB_RESPONSE_FAIL }, .streamId = request->streamId };
+    BYTE* data = NULL;
+    EnterCriticalSection(&bridge->clipboard_lock);
+    if (bridge->clipboard_files && request->listIndex < bridge->clipboard_file_count) {
+        const RdpClipboardFile* file = &bridge->clipboard_files[request->listIndex];
+        if (request->dwFlags == FILECONTENTS_SIZE) {
+            data = malloc(8);
+            if (data) { for (int i = 0; i < 8; i++) data[i] = (BYTE)(file->size >> (8 * i));
+                response.common.msgFlags = CB_RESPONSE_OK; response.cbRequested = 8; }
+        } else if (request->dwFlags == FILECONTENTS_RANGE && !file->directory &&
+                   request->cbRequested <= 1024 * 1024) {
+            UINT64 offset = ((UINT64)request->nPositionHigh << 32) | request->nPositionLow;
+            if (offset <= file->size) {
+                size_t length = request->cbRequested;
+                if (length > file->size - offset) length = (size_t)(file->size - offset);
+                data = malloc(length ? length : 1);
+                int fd = open(file->source, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+                struct stat statbuf;
+                if (data && fd >= 0 && fstat(fd, &statbuf) == 0 && S_ISREG(statbuf.st_mode) &&
+                    (UINT64)statbuf.st_size == file->size && offset <= (UINT64)INT64_MAX &&
+                    pread(fd, data, length, (off_t)offset) == (ssize_t)length) {
+                    response.common.msgFlags = CB_RESPONSE_OK;
+                    response.cbRequested = (UINT32)length;
+                }
+                if (fd >= 0) close(fd);
+            }
+        }
+    }
+    LeaveCriticalSection(&bridge->clipboard_lock);
+    response.requestedData = data;
+    UINT result = context->ClientFileContentsResponse(context, &response);
+    free(data);
+    return result;
+}
+static void clipboard_clear_files(RdpBridge* bridge) {
+    for (UINT32 i = 0; i < bridge->clipboard_file_count; i++) {
+        free((char*)bridge->clipboard_files[i].source);
+        free((char*)bridge->clipboard_files[i].remote_name);
+    }
+    free(bridge->clipboard_files);
+    bridge->clipboard_files = NULL;
+    bridge->clipboard_file_count = 0;
 }
 int rdp_manager_clipboard_set_text(RdpBridge* bridge, const char* text) {
     if (!bridge || !text || strlen(text) > 1024 * 1024) return 0;
     char* copy = strdup(text);
     if (!copy) return 0;
     EnterCriticalSection(&bridge->clipboard_lock);
+    clipboard_clear_files(bridge);
     if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text)); free(bridge->clipboard_text); }
     bridge->clipboard_text = copy;
+    LeaveCriticalSection(&bridge->clipboard_lock);
+    return clipboard_advertise(bridge) == CHANNEL_RC_OK;
+}
+int rdp_manager_clipboard_set_files(RdpBridge* bridge, const RdpClipboardFile* files, UINT32 count) {
+    if (!bridge || !files || !count || count > 4096) return 0;
+    RdpClipboardFile* copy = calloc(count, sizeof(*copy));
+    if (!copy) return 0;
+    for (UINT32 i = 0; i < count; i++) {
+        copy[i] = files[i];
+        copy[i].source = files[i].source ? strdup(files[i].source) : NULL;
+        copy[i].remote_name = files[i].remote_name ? strdup(files[i].remote_name) : NULL;
+        if (!copy[i].source || !copy[i].remote_name) {
+            for (UINT32 j = 0; j <= i; j++) { free((char*)copy[j].source); free((char*)copy[j].remote_name); }
+            free(copy); return 0;
+        }
+    }
+    EnterCriticalSection(&bridge->clipboard_lock);
+    clipboard_clear_files(bridge);
+    if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text));
+        free(bridge->clipboard_text); bridge->clipboard_text = NULL; }
+    bridge->clipboard_files = copy;
+    bridge->clipboard_file_count = count;
     LeaveCriticalSection(&bridge->clipboard_lock);
     return clipboard_advertise(bridge) == CHANNEL_RC_OK;
 }
@@ -220,6 +328,7 @@ static void channel_connected(void* context, const ChannelConnectedEventArgs* ev
         clip->ServerFormatList = clipboard_server_list;
         clip->ServerFormatDataRequest = clipboard_server_request;
         clip->ServerFormatDataResponse = clipboard_server_data;
+        clip->ServerFileContentsRequest = clipboard_file_request;
         return;
     }
     if (strcmp(event->name, DISP_DVC_CHANNEL_NAME) == 0) {
@@ -639,6 +748,7 @@ void rdp_manager_free(RdpBridge* bridge) {
     }
     if (bridge->input_event) CloseHandle(bridge->input_event);
     if (bridge->clipboard_text) { SecureZeroMemory(bridge->clipboard_text, strlen(bridge->clipboard_text)); free(bridge->clipboard_text); }
+    clipboard_clear_files(bridge);
     DeleteCriticalSection(&bridge->clipboard_lock);
     DeleteCriticalSection(&bridge->graphics_lock);
     free(bridge);

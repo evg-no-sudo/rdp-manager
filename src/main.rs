@@ -1,3 +1,4 @@
+mod clipboard_files;
 mod import_ui;
 mod profiles_ui;
 mod rdp;
