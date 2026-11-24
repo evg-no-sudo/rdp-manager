@@ -240,7 +240,7 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&adw::HeaderBar::new());
     let body = content();
-    body.append(&note("Выберите нужные подключения. Изменённые профили по умолчанию не отмечены; для них можно сохранить копию или явно заменить локальную версию. Локальные пароли не изменяются: после замены сервера или пользователя проверьте их актуальность. Удаления из файла не выполняются."));
+    body.append(&note("Для отличающихся профилей показано, что изменится: слева текущее значение, справа значение из набора. Отметьте профиль, чтобы сохранить копию или заменить локальную версию. Если меняется сервер или пользователь, проверьте сохранённый пароль."));
     let list = gtk::ListBox::new();
     list.set_selection_mode(gtk::SelectionMode::None);
     list.add_css_class("boxed-list");
@@ -277,8 +277,8 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
         let row = adw::ActionRow::builder()
             .title(&incoming.name)
             .subtitle(format!(
-                "{label}\n{} · порт {} · пользователь: {} · домен: {}",
-                incoming.host, incoming.port, incoming.username, incoming.domain
+                "{label}\n{} · порт {}",
+                incoming.host, incoming.port
             ))
             .build();
         row.set_use_markup(false);
@@ -295,8 +295,40 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
             row.add_suffix(&action);
         }
         seen.push(incoming.clone());
+        if let Some(local) = existing.filter(|_| conflict) {
+            let group = gtk::Box::new(gtk::Orientation::Vertical, 0);
+            group.append(&row);
+            let mut fields = vec![
+                ("Название", local.name.as_str(), incoming.name.as_str()),
+                (
+                    "Пользователь",
+                    local.username.as_str(),
+                    incoming.username.as_str(),
+                ),
+                ("Домен", local.domain.as_str(), incoming.domain.as_str()),
+            ];
+            if !local.host.eq_ignore_ascii_case(&incoming.host) {
+                fields.push(("Сервер", local.host.as_str(), incoming.host.as_str()));
+            }
+            let local_port = local.port.to_string();
+            let incoming_port = incoming.port.to_string();
+            fields.push(("Порт", &local_port, &incoming_port));
+            for (field, current, incoming) in fields.into_iter().filter(|(_, a, b)| a != b) {
+                let current = if current.is_empty() { "—" } else { current };
+                let incoming = if incoming.is_empty() { "—" } else { incoming };
+                let detail = gtk::Label::new(Some(&format!("{field}: {current} → {incoming}")));
+                detail.set_wrap(true);
+                detail.set_xalign(0.0);
+                detail.set_margin_start(16);
+                detail.set_margin_end(16);
+                detail.set_margin_bottom(6);
+                group.append(&detail);
+            }
+            list.append(&group);
+        } else {
+            list.append(&row);
+        }
         candidates.push((check, action, incoming, existing.cloned()));
-        list.append(&row);
     }
     body.append(&list);
     root.append(&scroll(&body));
