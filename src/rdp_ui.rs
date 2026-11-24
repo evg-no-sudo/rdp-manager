@@ -214,47 +214,85 @@ pub fn connect(
     let weak_parent = parent.downgrade();
     let weak_tabs = tabs.downgrade();
     glib::MainContext::default().spawn_local(async move {
-        let result=secrets::lookup_rdp(&profile.uid).await;
+        let result = secrets::lookup_rdp(&profile.uid).await;
         drop(operation);
-        let (Some(parent),Some(tabs))=(weak_parent.upgrade(),weak_tabs.upgrade()) else { return; };
-        if let Ok(Some(secret))=result {
-            connect_saved(&parent,&tabs,state,&profile.uid,secret);return;
+        let (Some(parent), Some(tabs)) = (weak_parent.upgrade(), weak_tabs.upgrade()) else {
+            return;
+        };
+        if let Ok(Some(secret)) = result {
+            connect_saved(&parent, &tabs, state, &profile.uid, secret);
+            return;
         }
-        let prompt=adw::AlertDialog::builder().heading(format!("Пароль: {}",profile.name))
-            .body("Введите пароль для подключения. Остальные параметры меняются в настройках профиля.").build();
-        let fields=gtk::Box::new(gtk::Orientation::Vertical,8);
-        let password=gtk::PasswordEntry::builder().show_peek_icon(true).build();
-        let remember=gtk::CheckButton::with_label("Сохранить пароль на этом ПК");
-        fields.append(&password);fields.append(&remember);prompt.set_extra_child(Some(&fields));
-        prompt.add_responses(&[("cancel","Отмена"),("connect","Подключиться")]);
-        prompt.set_close_response("cancel");prompt.set_default_response(Some("connect"));
-        let weak_parent=parent.downgrade();let weak_tabs=tabs.downgrade();
-        let focus_password=password.clone();
-        prompt.connect_response(None,move |_,response| {
-            if response!="connect" { password.set_text("");return; }
-            let secret=Zeroizing::new(password.text().to_string());password.set_text("");
-            let remember=remember.is_active();
-            let state=state.clone();let uid=profile.uid.clone();
-            let weak_parent=weak_parent.clone();let weak_tabs=weak_tabs.clone();
+        let account = if profile.username.is_empty() {
+            "Не указан в профиле".to_owned()
+        } else if profile.domain.is_empty() {
+            profile.username.clone()
+        } else {
+            format!("{}\\{}", profile.domain, profile.username)
+        };
+        let prompt = adw::AlertDialog::builder()
+            .heading(format!("Пароль: {}", profile.name))
+            .body(format!(
+                "Пользователь: {account}\nВведите пароль для подключения."
+            ))
+            .build();
+        let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
+        let password = gtk::PasswordEntry::builder().show_peek_icon(true).build();
+        let remember = gtk::CheckButton::with_label("Сохранить пароль на этом ПК");
+        fields.append(&password);
+        fields.append(&remember);
+        prompt.set_extra_child(Some(&fields));
+        prompt.add_responses(&[("cancel", "Отмена"), ("connect", "Подключиться")]);
+        prompt.set_close_response("cancel");
+        prompt.set_default_response(Some("connect"));
+        let weak_parent = parent.downgrade();
+        let weak_tabs = tabs.downgrade();
+        let focus_password = password.clone();
+        prompt.connect_response(None, move |_, response| {
+            if response != "connect" {
+                password.set_text("");
+                return;
+            }
+            let secret = Zeroizing::new(password.text().to_string());
+            password.set_text("");
+            let remember = remember.is_active();
+            let state = state.clone();
+            let uid = profile.uid.clone();
+            let weak_parent = weak_parent.clone();
+            let weak_tabs = weak_tabs.clone();
             glib::MainContext::default().spawn_local(async move {
-                let Some(operation)=state.operation(&uid) else { return; };
-                if !state.store.profiles().ok().is_some_and(|profiles|profiles.iter().any(|p|p.uid==uid)) { return; }
+                let Some(operation) = state.operation(&uid) else {
+                    return;
+                };
+                if !state
+                    .store
+                    .profiles()
+                    .ok()
+                    .is_some_and(|profiles| profiles.iter().any(|p| p.uid == uid))
+                {
+                    return;
+                }
                 if remember {
-                    if let Err(error)=secrets::store(&uid,&secret).await {
-                        if let Some(parent)=weak_parent.upgrade(){
-                            let alert=adw::AlertDialog::builder().heading("Пароль не сохранён").body(error).build();
-                            alert.add_response("close","Закрыть");alert.present(Some(&parent));
+                    if let Err(error) = secrets::store(&uid, &secret).await {
+                        if let Some(parent) = weak_parent.upgrade() {
+                            let alert = adw::AlertDialog::builder()
+                                .heading("Пароль не сохранён")
+                                .body(error)
+                                .build();
+                            alert.add_response("close", "Закрыть");
+                            alert.present(Some(&parent));
                         }
                         return;
                     }
                 }
                 drop(operation);
-                if let (Some(parent),Some(tabs))=(weak_parent.upgrade(),weak_tabs.upgrade()){
-                    connect_saved(&parent,&tabs,state,&uid,secret);
+                if let (Some(parent), Some(tabs)) = (weak_parent.upgrade(), weak_tabs.upgrade()) {
+                    connect_saved(&parent, &tabs, state, &uid, secret);
                 }
             });
         });
-        prompt.present(Some(&parent));focus_password.grab_focus();
+        prompt.present(Some(&parent));
+        focus_password.grab_focus();
     });
 }
 
