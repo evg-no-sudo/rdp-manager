@@ -12,7 +12,11 @@ pub fn refresh(state: &Rc<State>) {
         .lists
         .borrow_mut()
         .retain(|weak| weak.upgrade().is_some());
-    let profiles = state.store.profiles();
+    let folders = state.store.profile_folders().unwrap_or_default();
+    let profiles = state.store.profiles().map(|mut profiles| {
+        profiles.sort_by_key(|profile| folders.get(&profile.uid));
+        profiles
+    });
     for list in state
         .lists
         .borrow()
@@ -41,6 +45,10 @@ pub fn refresh(state: &Rc<State>) {
                         .activatable(true)
                         .build();
                     row.set_use_markup(false);
+                    row.set_widget_name(
+                        folders.get(&profile.uid).map(String::as_str).unwrap_or(""),
+                    );
+
                     row.set_tooltip_text(Some("Открыть настройки профиля"));
                     let connect = gtk::Button::builder()
                         .icon_name("media-playback-start-symbolic")
@@ -165,6 +173,46 @@ fn edit_draft(
     let port = entry("Порт", &profile.port.to_string());
     let username = entry("Пользователь", &profile.username);
     let domain = entry("Домен (необязательно)", &profile.domain);
+    let folders = state.store.profile_folders().unwrap_or_default();
+    let folder_key = clone_source.as_deref().unwrap_or(&profile.uid);
+    let folder = entry(
+        "Папка (необязательно)",
+        folders.get(folder_key).map(String::as_str).unwrap_or(""),
+    );
+    let known: std::collections::BTreeSet<_> = folders.values().map(String::as_str).collect();
+    if !known.is_empty() {
+        let choices = gtk::MenuButton::builder()
+            .icon_name("folder-open-symbolic")
+            .tooltip_text("Выбрать существующую папку")
+            .valign(gtk::Align::Center)
+            .build();
+        let popover = gtk::Popover::new();
+        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        for name in known {
+            let button = gtk::Button::with_label(name);
+            let folder = folder.downgrade();
+            let popover = popover.downgrade();
+            let name = name.to_owned();
+            button.connect_clicked(move |_| {
+                if let Some(folder) = folder.upgrade() {
+                    folder.set_text(&name);
+                }
+                if let Some(popover) = popover.upgrade() {
+                    popover.popdown();
+                }
+            });
+            items.append(&button);
+        }
+        let scroll = gtk::ScrolledWindow::builder()
+            .propagate_natural_height(true)
+            .max_content_height(240)
+            .child(&items)
+            .build();
+        popover.set_child(Some(&scroll));
+        choices.set_popover(Some(&popover));
+        folder.add_suffix(&choices);
+    }
+
     form.append(&group);
     let advanced = adw::ExpanderRow::builder()
         .title("Дополнительные настройки")
@@ -328,7 +376,7 @@ fn edit_draft(
         let result = (|| {
             let port = port.text().trim().parse::<u16>()
                 .map_err(|_| "Порт должен быть от 1 до 65535.")?;
-            save_state.store.save_with_options(&Profile {
+            save_state.store.save_with_folder(&Profile {
                 id: save_id.get(),
                 uid: uid.clone(),
                 name: name.text().trim().into(),
@@ -337,7 +385,7 @@ fn edit_draft(
                 username: username.text().trim().into(),
                 domain: domain.text().trim().into(),
             }, &SessionOptions { keyboard_layout:if keyboard_layout.selected()==0 {0x419}else{0x409},
-                quality:quality.selected(), resolution:resolution.selected(), shared_folder:shared_folder.text().trim().into() })
+                quality:quality.selected(), resolution:resolution.selected(), shared_folder:shared_folder.text().trim().into() }, Some(folder.text().trim()))
         })();
         let id = match result {
             Ok(id) => id,

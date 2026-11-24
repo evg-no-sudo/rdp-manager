@@ -82,6 +82,10 @@ int main(int argc,char** argv){
     assert(clipboard_flush_reads(avc444));
     assert(!avc444->clipboard_reads[0].thread);
     assert(rdp_manager_clipboard_bytes(avc444) == 3);
+    assert(rdp_manager_clipboard_complete(avc444));
+    ClipboardRead duplicate = { .file_index = 1, .offset = 1, .length = 2 };
+    clipboard_record_range(avc444, &duplicate);
+    assert(rdp_manager_clipboard_bytes(avc444) == 3);
     unlink(name);
     avc444->clipboard=NULL;
     rdp_manager_free(avc444);

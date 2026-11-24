@@ -744,7 +744,7 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         glib::ControlFlow::Continue
     });
     let last_clipboard_sample = Cell::new(std::time::Instant::now());
-    let clipboard_bytes = Cell::new(0);
+    let clipboard_progress = Cell::new((0, false));
     glib::timeout_add_local(Duration::from_millis(16), move || {
         let (Some(root), Some(picture), Some(status), Some(disconnect), Some(cad), Some(capture)) = (
             weak_root.upgrade(),
@@ -759,10 +759,13 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
         };
         if last_clipboard_sample.get().elapsed() >= Duration::from_millis(250) {
             last_clipboard_sample.set(std::time::Instant::now());
-            let bytes = control.clipboard_bytes();
-            let previous = clipboard_bytes.replace(bytes);
-            if bytes != previous && picture.is_sensitive() {
-                if bytes > 0 {
+            let current = control.clipboard_progress();
+            let previous = clipboard_progress.replace(current);
+            let (bytes, complete) = current;
+            if current != previous && picture.is_sensitive() {
+                if complete {
+                    message(&status, "Файлы переданы", true);
+                } else if bytes > 0 {
                     message(
                         &status,
                         &format!("Файлы: отправлено {:.2} МиБ", bytes as f64 / 1_048_576.0),

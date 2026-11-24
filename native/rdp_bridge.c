@@ -40,10 +40,15 @@ typedef struct {
     HANDLE thread;
     char* path;
     UINT64 size, offset, generation;
-    UINT32 length, stream_id;
+    UINT32 length, stream_id, file_index;
     BYTE* data;
     BOOL success;
 } ClipboardRead;
+
+typedef struct ClipboardRange {
+    UINT64 start, end;
+    struct ClipboardRange* next;
+} ClipboardRange;
 
 struct RdpBridge {
     freerdp* instance;
@@ -66,6 +71,10 @@ struct RdpBridge {
     ClipboardRead clipboard_reads[CLIPBOARD_READ_SLOTS];
     UINT64 clipboard_generation;
     atomic_uint_fast64_t clipboard_bytes;
+    atomic_bool clipboard_complete;
+    ClipboardRange** clipboard_ranges;
+    size_t clipboard_range_count;
+    UINT64 clipboard_total, clipboard_covered;
     UINT32 clipboard_file_count;
     CRITICAL_SECTION clipboard_lock;
     atomic_int cancelled;
@@ -411,13 +420,13 @@ static void clipboard_release_read(ClipboardRead* read) {
     *read = (ClipboardRead){0};
 }
 static BOOL clipboard_start_read(RdpBridge* bridge, const RdpClipboardFile* file,
-                                 UINT32 stream_id, UINT64 offset, UINT32 length) {
+                                 UINT32 stream_id, UINT32 file_index, UINT64 offset, UINT32 length) {
     for (size_t i = 0; i < CLIPBOARD_READ_SLOTS; i++) {
         ClipboardRead* read = &bridge->clipboard_reads[i];
         if (read->thread) continue;
         *read = (ClipboardRead){ .path = strdup(file->source), .size = file->size,
             .offset = offset, .length = length, .stream_id = stream_id,
-            .generation = bridge->clipboard_generation };
+            .generation = bridge->clipboard_generation, .file_index = file_index };
         if (!read->path) return FALSE;
         read->thread = CreateThread(NULL, 0, clipboard_read_block, read, 0, NULL);
         if (read->thread) return TRUE;
@@ -427,6 +436,41 @@ static BOOL clipboard_start_read(RdpBridge* bridge, const RdpClipboardFile* file
     }
     return FALSE;
 }
+/* Track the union of acknowledged ranges so repeated or out-of-order reads
+   cannot make the clipboard offer appear complete prematurely. */
+static void clipboard_record_range(RdpBridge* bridge, const ClipboardRead* read) {
+    if (!read->length || !bridge->clipboard_ranges) return;
+    ClipboardRange** next = &bridge->clipboard_ranges[read->file_index];
+    UINT64 start = read->offset, end = start + read->length;
+    while (*next && (*next)->end < start) next = &(*next)->next;
+
+    ClipboardRange* range = *next;
+    if (!range || range->start > end) {
+        if (bridge->clipboard_range_count >= 8192) return;
+        range = malloc(sizeof(*range));
+        if (!range) return;
+        *range = (ClipboardRange){ start, end, *next };
+        *next = range;
+        bridge->clipboard_range_count++;
+    } else {
+        bridge->clipboard_covered -= range->end - range->start;
+        if (start < range->start) range->start = start;
+        if (end > range->end) range->end = end;
+        while (range->next && range->next->start <= range->end) {
+            ClipboardRange* merged = range->next;
+            bridge->clipboard_covered -= merged->end - merged->start;
+            if (merged->end > range->end) range->end = merged->end;
+            range->next = merged->next;
+            free(merged);
+            bridge->clipboard_range_count--;
+        }
+    }
+    bridge->clipboard_covered += range->end - range->start;
+    atomic_store(&bridge->clipboard_bytes, bridge->clipboard_covered);
+    atomic_store(&bridge->clipboard_complete,
+                 bridge->clipboard_total > 0 && bridge->clipboard_covered == bridge->clipboard_total);
+}
+
 static BOOL clipboard_flush_reads(RdpBridge* bridge) {
     BOOL ok = TRUE;
     for (size_t i = 0; i < CLIPBOARD_READ_SLOTS; i++) {
@@ -450,7 +494,7 @@ static BOOL clipboard_flush_reads(RdpBridge* bridge) {
             if (bridge->clipboard->ClientFileContentsResponse(bridge->clipboard, &response) != CHANNEL_RC_OK)
                 ok = FALSE;
             else if (read.success && read.generation == bridge->clipboard_generation)
-                atomic_fetch_add(&bridge->clipboard_bytes, read.length);
+                clipboard_record_range(bridge, &read);
         }
         clipboard_release_read(&read);
     }
@@ -476,7 +520,7 @@ static UINT clipboard_file_request(CliprdrClientContext* context, const CLIPRDR_
             if (offset <= file->size && offset <= INT64_MAX) {
                 UINT32 length = request->cbRequested;
                 if (length > file->size - offset) length = (UINT32)(file->size - offset);
-                queued = clipboard_start_read(bridge, file, request->streamId, offset, length);
+                queued = clipboard_start_read(bridge, file, request->streamId, request->listIndex, offset, length);
             }
         }
     }
@@ -488,6 +532,21 @@ static void clipboard_clear_files(RdpBridge* bridge) {
         free((char*)bridge->clipboard_files[i].source);
         free((char*)bridge->clipboard_files[i].remote_name);
     }
+    if (bridge->clipboard_ranges) {
+        for (UINT32 i = 0; i < bridge->clipboard_file_count; i++) {
+            ClipboardRange* range = bridge->clipboard_ranges[i];
+            while (range) {
+                ClipboardRange* next = range->next;
+                free(range);
+                range = next;
+            }
+        }
+        free(bridge->clipboard_ranges);
+        bridge->clipboard_ranges = NULL;
+    }
+    bridge->clipboard_total = bridge->clipboard_covered = 0;
+    bridge->clipboard_range_count = 0;
+    atomic_store(&bridge->clipboard_complete, FALSE);
     free(bridge->clipboard_files);
     bridge->clipboard_files = NULL;
     bridge->clipboard_file_count = 0;
@@ -524,6 +583,9 @@ int rdp_manager_clipboard_set_files(RdpBridge* bridge, const RdpClipboardFile* f
         free(bridge->clipboard_text); bridge->clipboard_text = NULL; }
     bridge->clipboard_files = copy;
     bridge->clipboard_file_count = count;
+    bridge->clipboard_ranges = calloc(count, sizeof(*bridge->clipboard_ranges));
+    for (UINT32 i = 0; i < count; i++)
+        if (!copy[i].directory) bridge->clipboard_total += copy[i].size;
     LeaveCriticalSection(&bridge->clipboard_lock);
     return clipboard_advertise(bridge) == CHANNEL_RC_OK;
 }
@@ -826,6 +888,7 @@ RdpBridge* rdp_manager_new(const char* host, uint16_t port, const char* user,
     atomic_init(&bridge->frame_dirty, 0);
     atomic_init(&bridge->paints, 0);
     atomic_init(&bridge->clipboard_bytes, 0);
+    atomic_init(&bridge->clipboard_complete, FALSE);
     atomic_init(&bridge->input_wakes, 0);
     atomic_init(&bridge->input_scans, 0);
     atomic_init(&bridge->input_unicode, 0);
@@ -1070,4 +1133,8 @@ void rdp_manager_graphics_stats(RdpBridge* bridge, char* output, size_t capacity
 
 uint64_t rdp_manager_clipboard_bytes(const RdpBridge* bridge) {
     return atomic_load(&bridge->clipboard_bytes);
+}
+
+int rdp_manager_clipboard_complete(const RdpBridge* bridge) {
+    return atomic_load(&bridge->clipboard_complete);
 }

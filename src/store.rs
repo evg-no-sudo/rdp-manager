@@ -118,7 +118,7 @@ impl Store {
         connection.busy_timeout(std::time::Duration::from_secs(3))?;
         connection.execute_batch("PRAGMA foreign_keys = ON;")?;
         let version: i64 = connection.pragma_query_value(None, "user_version", |r| r.get(0))?;
-        if version > 6 {
+        if version > 7 {
             return Err("База создана более новой версией приложения.".into());
         }
         if version == 0 {
@@ -193,6 +193,14 @@ impl Store {
                 PRAGMA user_version=6;",
             )?;
         }
+        if version < 7 {
+            connection.execute_batch(
+                "CREATE TABLE IF NOT EXISTS profile_folders (
+                    profile_uid TEXT PRIMARY KEY REFERENCES profiles(uid) ON DELETE CASCADE,
+                    name TEXT NOT NULL
+                ); PRAGMA user_version=7;",
+            )?;
+        }
         Ok(Self(connection))
     }
 
@@ -202,13 +210,50 @@ impl Store {
         options.validate()?;
         Ok(options)
     }
+    pub fn profile_folders(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut query = self
+            .0
+            .prepare("SELECT profile_uid, name FROM profile_folders")?;
+        let rows = query.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
+    #[cfg(test)]
     pub fn save_with_options(&self, profile: &Profile, options: &SessionOptions) -> Result<i64> {
+        self.save_with_folder(profile, options, None)
+    }
+
+    pub fn save_with_folder(
+        &self,
+        profile: &Profile,
+        options: &SessionOptions,
+        folder: Option<&str>,
+    ) -> Result<i64> {
+        if folder
+            .is_some_and(|name| name.chars().count() > 80 || name.chars().any(char::is_control))
+        {
+            return Err("Название папки должно содержать не больше 80 символов.".into());
+        }
         options.validate()?;
         let transaction = self.0.unchecked_transaction()?;
         let id = self.save(profile)?;
         self.0.execute("INSERT INTO session_options(profile_uid,keyboard_layout,quality,resolution,shared_folder) VALUES(?1,?2,?3,?4,?5)
             ON CONFLICT(profile_uid) DO UPDATE SET keyboard_layout=excluded.keyboard_layout,quality=excluded.quality,resolution=excluded.resolution,shared_folder=excluded.shared_folder",
             params![profile.uid,options.keyboard_layout,options.quality,options.resolution,options.shared_folder])?;
+        if let Some(folder) = folder {
+            if folder.is_empty() {
+                self.0.execute(
+                    "DELETE FROM profile_folders WHERE profile_uid=?1",
+                    [&profile.uid],
+                )?;
+            } else {
+                self.0.execute(
+                    "INSERT INTO profile_folders(profile_uid,name) VALUES(?1,?2)
+                     ON CONFLICT(profile_uid) DO UPDATE SET name=excluded.name",
+                    params![profile.uid, folder],
+                )?;
+            }
+        }
         transaction.commit()?;
         Ok(id)
     }
@@ -417,6 +462,32 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn profile_folder_survives_reopen_and_can_be_cleared() -> Result<()> {
+        let directory = tempfile::tempdir()?;
+        let path = directory.path().join("profiles.sqlite3");
+        let store = Store::open(&path)?;
+        let mut profile = Profile {
+            name: "Test".into(),
+            host: "host.test".into(),
+            ..Profile::default()
+        };
+        let options = SessionOptions::default();
+        profile.id = Some(store.save_with_folder(&profile, &options, Some("Работа"))?);
+        drop(store);
+        let store = Store::open(&path)?;
+        assert_eq!(
+            store
+                .profile_folders()?
+                .get(&profile.uid)
+                .map(String::as_str),
+            Some("Работа")
+        );
+        store.save_with_folder(&profile, &options, Some(""))?;
+        assert!(store.profile_folders()?.is_empty());
+        Ok(())
+    }
 
     #[test]
     fn schema_five_adds_local_shared_folder_without_changing_existing_options() -> Result<()> {

@@ -8,15 +8,16 @@
  
  #include <freerdp/utils/signal.h>
  #include <freerdp/log.h>
-@@ -130,6 +131,7 @@
+@@ -130,6 +131,8 @@
  	CliprdrFuseFile* fuse_file;
  	fuse_req_t fuse_req;
  	UINT32 stream_id;
 +	UINT64 started_at;
++	UINT32 expected_length;
  } CliprdrFuseRequest;
  #endif
  
-@@ -157,6 +159,7 @@
+@@ -157,6 +160,7 @@
  	HANDLE fuse_start_sync;
  	HANDLE fuse_stop_sync;
  	HANDLE fuse_thread;
@@ -24,7 +25,7 @@
  	struct fuse_session* fuse_sess;
  #if FUSE_USE_VERSION < 30
  	struct fuse_chan* ch;
-@@ -750,6 +753,7 @@
+@@ -750,6 +754,7 @@
  	fuse_request->fuse_file = fuse_file;
  	fuse_request->fuse_req = fuse_req;
  	fuse_request->operation_type = operation_type;
@@ -32,7 +33,41 @@
  
  	while (stream_id == 0 ||
  	       HashTable_GetItemValue(file_context->request_table, (void*)(uintptr_t)stream_id))
-@@ -1187,6 +1191,33 @@
+@@ -952,8 +957,8 @@
+ 		return;
+ 	}
+ 
+-	/* Important for KDE to get file correctly */
+-	file_info->direct_io = 1;
++	/* Allow kernel read-ahead. Each clipboard offer owns a separate set of inodes. */
++	file_info->keep_cache = 0;
+ 
+ 	fuse_reply_open(fuse_req, file_info);
+ }
+@@ -981,6 +986,7 @@
+ 	file_contents_request.nPositionLow = (UINT32)(offset & 0xFFFFFFFF);
+ 	file_contents_request.nPositionHigh = (UINT32)((offset >> 32) & 0xFFFFFFFF);
+ 	file_contents_request.cbRequested = (UINT32)requested_size;
++	fuse_request->expected_length = file_contents_request.cbRequested;
+ 	file_contents_request.haveClipDataId = fuse_file->has_clip_data_id;
+ 	file_contents_request.clipDataId = fuse_file->clip_data_id;
+ 
+@@ -1034,7 +1040,14 @@
+ 		return;
+ 	}
+ 
++	size = MIN(size, fuse_file->size - (UINT64)offset);
+ 	size = MIN(size, 8ULL * 1024ULL * 1024ULL);
++	if (size == 0)
++	{
++		HashTable_Unlock(file_context->inode_table);
++		fuse_reply_buf(fuse_req, nullptr, 0);
++		return;
++	}
+ 
+ 	result = request_file_range_async(file_context, fuse_file, fuse_req, offset, size);
+ 	HashTable_Unlock(file_context->inode_table);
+@@ -1187,6 +1200,33 @@
  	}
  }
  
@@ -66,7 +101,19 @@
  static DWORD WINAPI cliprdr_file_fuse_thread(LPVOID arg)
  {
  	CliprdrFileContext* file = (CliprdrFileContext*)arg;
-@@ -1296,7 +1327,6 @@
+@@ -1293,10 +1333,18 @@
+ 	}
+ 	else if (fuse_request->operation_type == FUSE_LL_OPERATION_READ)
+ 	{
++		/* A short cached FUSE read may be zero-filled by the kernel. Reject it. */
++		if (file_contents_response->cbRequested != fuse_request->expected_length)
++		{
++			fuse_reply_err(fuse_request->fuse_req, EIO);
++			HashTable_Remove(file_context->request_table,
++			                 (void*)(uintptr_t)file_contents_response->streamId);
++			HashTable_Unlock(file_context->inode_table);
++			return CHANNEL_RC_OK;
++		}
  		DEBUG_CLIPRDR(file_context->log, "Received file range for file \"%s\" with stream id %u",
  		              fuse_request->fuse_file->filename, file_contents_response->streamId);
  	}
@@ -74,7 +121,7 @@
  
  	switch (fuse_request->operation_type)
  	{
-@@ -1320,6 +1350,7 @@
+@@ -1320,6 +1368,7 @@
  	HashTable_Remove(file_context->request_table,
  	                 (void*)(uintptr_t)file_contents_response->streamId);
  
@@ -82,7 +129,7 @@
  	return CHANNEL_RC_OK;
  }
  #endif
-@@ -2119,6 +2150,12 @@
+@@ -2119,6 +2168,12 @@
  		(void)WaitForSingleObject(file->fuse_thread, INFINITE);
  		(void)CloseHandle(file->fuse_thread);
  	}
@@ -95,7 +142,7 @@
  	if (file->fuse_stop_sync)
  		(void)CloseHandle(file->fuse_stop_sync);
  	if (file->fuse_start_sync)
-@@ -2141,17 +2178,11 @@
+@@ -2141,17 +2196,11 @@
  {
  	WINPR_ASSERT(file);
  
@@ -118,7 +165,7 @@
  		return FALSE;
  	}
  	return TRUE;
-@@ -2499,6 +2530,9 @@
+@@ -2499,6 +2548,9 @@
  	if (!(file->fuse_thread = CreateThread(nullptr, 0, cliprdr_file_fuse_thread, file, 0, nullptr)))
  		goto fail;
  

@@ -273,6 +273,33 @@ fn create_session_window(
     list.set_valign(gtk::Align::Start);
     list.set_vexpand(false);
     list.add_css_class("boxed-list");
+    list.set_header_func(|row, previous| {
+        if !row.is::<adw::ActionRow>() {
+            row.set_header(None::<&gtk::Widget>);
+            return;
+        }
+        let folder = row.widget_name();
+        if previous.is_some_and(|previous| previous.widget_name() == folder) {
+            row.set_header(None::<&gtk::Widget>);
+            return;
+        }
+        let title = if folder.is_empty() {
+            "Без папки"
+        } else {
+            folder.as_str()
+        };
+        let header = gtk::Label::builder()
+            .label(title)
+            .xalign(0.0)
+            .ellipsize(gtk::pango::EllipsizeMode::End)
+            .margin_start(12)
+            .margin_end(12)
+            .margin_top(8)
+            .margin_bottom(4)
+            .build();
+        header.add_css_class("heading");
+        row.set_header(Some(&header));
+    });
     let search_for_filter = search.downgrade();
     list.set_filter_func(move |row| {
         let Some(search) = search_for_filter.upgrade() else {
@@ -283,7 +310,8 @@ fn create_session_window(
             return true;
         }
         row.downcast_ref::<adw::ActionRow>().is_some_and(|profile| {
-            profile.title().to_lowercase().contains(&query)
+            profile.widget_name().to_lowercase().contains(&query)
+                || profile.title().to_lowercase().contains(&query)
                 || profile
                     .subtitle()
                     .unwrap_or_default()
@@ -337,7 +365,17 @@ fn create_session_window(
                 .upgrade()
                 .filter(|window| window.is_fullscreen())
             {
-                window.unfullscreen();
+                if tabs.n_pages() > 1 {
+                    let index = tabs.page_position(page);
+                    let neighbor = if index + 1 < tabs.n_pages() {
+                        index + 1
+                    } else {
+                        index - 1
+                    };
+                    tabs.set_selected_page(&tabs.nth_page(neighbor));
+                } else {
+                    window.unfullscreen();
+                }
             }
         }
         close_state.close_session(&page.child());
