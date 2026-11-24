@@ -70,14 +70,20 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     let settings = Settings::load();
     let saved = settings.as_ref().ok().and_then(|v| v.clone());
     let dialog = adw::Dialog::builder()
-        .title("SFTP / SSH")
-        .content_width(700)
-        .content_height(680)
+        .title("Синхронизация подключений через SFTP")
+        .content_width(580)
+        .content_height(600)
         .build();
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     root.append(&adw::HeaderBar::new());
     let body = box_content();
-    body.append(&gtk::Label::builder().label("Ручной обмен зашифрованными наборами. Пароли RDP и SSH-ключи в наборы не входят. Каталог на сервере должен существовать. Автоматическое слияние и перенос удалений пока не выполняются.").wrap(true).xalign(0.0).build());
+    let connection = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    let connection_expander = gtk::Expander::builder()
+        .label("Настройки SSH")
+        .expanded(saved.is_none())
+        .child(&connection)
+        .build();
+    body.append(&connection_expander);
     let group = adw::PreferencesGroup::builder().title("SSH-сервер").build();
     let host = entry(
         &group,
@@ -96,13 +102,13 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     );
     let directory = entry(
         &group,
-        "Каталог (полный путь или относительно SFTP home)",
+        "Папка на сервере",
         saved
             .as_ref()
             .map(|s| s.directory.as_str())
             .unwrap_or("rdp-manager"),
     );
-    body.append(&group);
+    connection.append(&group);
     let auth = gtk::DropDown::from_strings(&["SSH-agent", "Файл SSH-ключа", "Пароль SSH"]);
     auth.set_selected(
         match saved.as_ref().map(|s| s.auth).unwrap_or(Auth::Agent) {
@@ -111,8 +117,11 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
             Auth::Password => 2,
         },
     );
-    body.append(&auth);
-    let group=adw::PreferencesGroup::builder().title("Аутентификация").description("Файл ключа используется на месте и не копируется. Для зашифрованного ключа введите passphrase. SSH-agent использует SSH_AUTH_SOCK текущей сессии.").build();
+    let auth_row = adw::ActionRow::builder().title("Способ входа").build();
+    auth.set_valign(gtk::Align::Center);
+    auth_row.add_suffix(&auth);
+    group.add(&auth_row);
+    let group = adw::PreferencesGroup::new();
     let key = entry(
         &group,
         "Файл приватного ключа",
@@ -122,9 +131,9 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
         .title("Passphrase ключа")
         .build();
     group.add(&secret);
-    body.append(&group);
+    connection.append(&group);
     let choose_key = gtk::Button::with_label("Выбрать файл SSH-ключа…");
-    body.append(&choose_key);
+    connection.append(&choose_key);
     let weak_parent = parent.downgrade();
     let weak_key = key.downgrade();
     choose_key.connect_clicked(move |_| {
@@ -144,11 +153,11 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
             });
         }
     });
-    let remember =
-        gtk::CheckButton::with_label("Сохранить пароль/passphrase на этом ПК через Secret Service");
+    let remember = gtk::CheckButton::with_label("Запомнить на этом ПК");
     remember.set_active(saved.as_ref().is_some_and(|s| s.secret_saved));
-    body.append(&remember);
+    connection.append(&remember);
     {
+        let group = group.clone();
         let key = key.clone();
         let secret = secret.clone();
         let choose = choose_key.clone();
@@ -156,6 +165,7 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
         let update = move |auth: &gtk::DropDown| {
             let mode = auth.selected();
             secret.set_text("");
+            group.set_visible(mode != 0);
             key.set_visible(mode == 1);
             choose.set_visible(mode == 1);
             secret.set_visible(mode != 0);
@@ -170,8 +180,11 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
         auth.connect_selected_notify(update);
     }
     let save = gtk::Button::with_label("Сохранить настройки SFTP");
-    body.append(&save);
-    let group=adw::PreferencesGroup::builder().title("Шифрование набора").description("Мастер-пароль набора отличается от SSH-пароля/passphrase. Для отправки — минимум 12 символов. На принимающем устройстве нужен тот же мастер-пароль.").build();
+    connection.append(&save);
+    let group = adw::PreferencesGroup::builder()
+        .title("Шифрование подключений")
+        .description("Используйте один мастер-пароль на обоих ПК. Пароли RDP хранятся локально.")
+        .build();
     let master = adw::PasswordEntryRow::builder()
         .title("Мастер-пароль набора")
         .build();
@@ -214,7 +227,7 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
             false,
         ),
     }
-    body.append(&gtk::Label::new(Some("Подключения для отправки")));
+    let outgoing = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let selection = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     for (text, active) in [("Выбрать все", true), ("Снять отметки", false)] {
         let button = gtk::Button::with_label(text);
@@ -226,9 +239,15 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
         });
         selection.append(&button);
     }
-    body.append(&selection);
-    body.append(&list);
-    let refresh = gtk::Button::with_label("Проверить SSH и обновить список наборов");
+    outgoing.append(&selection);
+    outgoing.append(&list);
+    body.append(
+        &gtk::Expander::builder()
+            .label("Выбрать подключения для отправки")
+            .child(&outgoing)
+            .build(),
+    );
+    let refresh = gtk::Button::with_label("Обновить список на сервере");
     body.append(&refresh);
     let remote = gtk::DropDown::builder()
         .model(&gtk::StringList::new(&[]))
@@ -242,9 +261,9 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
     root.append(&scroll);
     let footer = box_content();
     footer.append(&status);
-    let upload = gtk::Button::with_label("Отправить отмеченные подключения");
+    let upload = gtk::Button::with_label("Отправить подключения");
     upload.add_css_class("suggested-action");
-    let download = gtk::Button::with_label("Открыть выбранный набор с сервера");
+    let download = gtk::Button::with_label("Предпросмотр импорта");
     footer.append(&upload);
     footer.append(&download);
     root.append(&footer);

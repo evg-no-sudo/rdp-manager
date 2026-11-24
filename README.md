@@ -184,7 +184,7 @@ sh scripts/build-deb.sh
 Установка версии 0.1.0 из каталога проекта:
 
 ```sh
-sudo apt install ./target/dist/rdp-manager_0.1.0-1_amd64.deb
+sudo apt install ./target/dist/rdp-manager_0.1.0-2_amd64.deb
 rdp-manager
 ```
 

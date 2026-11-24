@@ -143,13 +143,15 @@ pub fn create_window(
     );
     import_menu.append(Some("Выбрать файлы…"), Some("win.import-remmina"));
     menu.append_submenu(Some("Импорт Remmina"), &import_menu);
-    menu.append(Some("Обмен через папку…"), Some("win.transfer-profiles"));
-    menu.append(Some("WebDAV / Nextcloud…"), Some("win.webdav"));
-    menu.append(Some("SFTP / SSH…"), Some("win.sftp"));
+    let sync_menu = gtk::gio::Menu::new();
+    sync_menu.append(Some("Через папку…"), Some("win.transfer-profiles"));
+    sync_menu.append(Some("Через WebDAV / Nextcloud…"), Some("win.webdav"));
+    sync_menu.append(Some("Через SFTP / SSH…"), Some("win.sftp"));
+    menu.append_submenu(Some("Синхронизация подключений"), &sync_menu);
     menu.append(Some("История подключений…"), Some("win.history"));
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
-        .tooltip_text("Импорт и обмен подключениями")
+        .tooltip_text("Импорт, синхронизация и история подключений")
         .menu_model(&menu)
         .build();
     more.add_css_class("flat");
