@@ -1,6 +1,101 @@
 --- a/client/common/client_cliprdr_file.c
 +++ b/client/common/client_cliprdr_file.c
-@@ -2141,17 +2141,11 @@
+@@ -45,6 +45,7 @@
+ #include <winpr/stream.h>
+ #include <winpr/clipboard.h>
+ #include <winpr/path.h>
++#include <winpr/sysinfo.h>
+ 
+ #include <freerdp/utils/signal.h>
+ #include <freerdp/log.h>
+@@ -130,6 +131,7 @@
+ 	CliprdrFuseFile* fuse_file;
+ 	fuse_req_t fuse_req;
+ 	UINT32 stream_id;
++	UINT64 started_at;
+ } CliprdrFuseRequest;
+ #endif
+ 
+@@ -157,6 +159,7 @@
+ 	HANDLE fuse_start_sync;
+ 	HANDLE fuse_stop_sync;
+ 	HANDLE fuse_thread;
++	HANDLE fuse_watchdog;
+ 	struct fuse_session* fuse_sess;
+ #if FUSE_USE_VERSION < 30
+ 	struct fuse_chan* ch;
+@@ -750,6 +753,7 @@
+ 	fuse_request->fuse_file = fuse_file;
+ 	fuse_request->fuse_req = fuse_req;
+ 	fuse_request->operation_type = operation_type;
++	fuse_request->started_at = GetTickCount64();
+ 
+ 	while (stream_id == 0 ||
+ 	       HashTable_GetItemValue(file_context->request_table, (void*)(uintptr_t)stream_id))
+@@ -1187,6 +1191,33 @@
+ 	}
+ }
+ 
++static BOOL expire_fuse_request(const void* key, void* value, void* arg)
++{
++	CliprdrFileContext* file = arg;
++	CliprdrFuseRequest* request = value;
++	if (GetTickCount64() - request->started_at >= 30000)
++	{
++		WLog_Print(file->log, WLOG_WARN, "Clipboard request %u timed out", request->stream_id);
++		fuse_reply_err(request->fuse_req, ETIMEDOUT);
++		HashTable_Remove(file->request_table, key);
++	}
++	return TRUE;
++}
++
++static DWORD WINAPI clipboard_fuse_watchdog(LPVOID arg)
++{
++	CliprdrFileContext* file = arg;
++	while (WaitForSingleObject(file->fuse_stop_sync, 1000) == WAIT_TIMEOUT)
++	{
++		HashTable_Lock(file->inode_table);
++		const BOOL scanned = HashTable_Foreach(file->request_table, expire_fuse_request, file);
++		HashTable_Unlock(file->inode_table);
++		if (!scanned)
++			break;
++	}
++	return 0;
++}
++
+ static DWORD WINAPI cliprdr_file_fuse_thread(LPVOID arg)
+ {
+ 	CliprdrFileContext* file = (CliprdrFileContext*)arg;
+@@ -1296,7 +1327,6 @@
+ 		DEBUG_CLIPRDR(file_context->log, "Received file range for file \"%s\" with stream id %u",
+ 		              fuse_request->fuse_file->filename, file_contents_response->streamId);
+ 	}
+-	HashTable_Unlock(file_context->inode_table);
+ 
+ 	switch (fuse_request->operation_type)
+ 	{
+@@ -1320,6 +1350,7 @@
+ 	HashTable_Remove(file_context->request_table,
+ 	                 (void*)(uintptr_t)file_contents_response->streamId);
+ 
++	HashTable_Unlock(file_context->inode_table);
+ 	return CHANNEL_RC_OK;
+ }
+ #endif
+@@ -2119,6 +2150,12 @@
+ 		(void)WaitForSingleObject(file->fuse_thread, INFINITE);
+ 		(void)CloseHandle(file->fuse_thread);
+ 	}
++	if (file->fuse_watchdog)
++	{
++		(void)SetEvent(file->fuse_stop_sync);
++		(void)WaitForSingleObject(file->fuse_watchdog, INFINITE);
++		(void)CloseHandle(file->fuse_watchdog);
++	}
+ 	if (file->fuse_stop_sync)
+ 		(void)CloseHandle(file->fuse_stop_sync);
+ 	if (file->fuse_start_sync)
+@@ -2141,17 +2178,11 @@
  {
  	WINPR_ASSERT(file);
  
@@ -23,3 +118,13 @@
  		return FALSE;
  	}
  	return TRUE;
+@@ -2499,6 +2530,9 @@
+ 	if (!(file->fuse_thread = CreateThread(nullptr, 0, cliprdr_file_fuse_thread, file, 0, nullptr)))
+ 		goto fail;
+ 
++	if (!(file->fuse_watchdog = CreateThread(nullptr, 0, clipboard_fuse_watchdog, file, 0, nullptr)))
++		goto fail;
++
+ 	if (WaitForSingleObject(file->fuse_start_sync, INFINITE) == WAIT_FAILED)
+ 		WLog_Print(file->log, WLOG_ERROR, "Failed to wait for start sync");
+ #endif

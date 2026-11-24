@@ -44,9 +44,13 @@ pub fn stage(
                 return Err("Копирование отменено.");
             }
             let count = remaining.min(buffer.len() as u64) as usize;
-            input
-                .read_exact(&mut buffer[..count])
-                .map_err(|_| "Не удалось прочитать файл из исходного сеанса.")?;
+            input.read_exact(&mut buffer[..count]).map_err(|error| {
+                if error.kind() == std::io::ErrorKind::TimedOut {
+                    "Исходный сервер 30 секунд не отвечал. Скопируйте файлы заново и повторите."
+                } else {
+                    "Не удалось прочитать файл из исходного сеанса."
+                }
+            })?;
             output
                 .write_all(&buffer[..count])
                 .map_err(|_| "Не удалось записать временный файл. Проверьте свободное место.")?;

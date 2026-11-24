@@ -97,6 +97,7 @@ impl FileRelay {
                 if let Some(status) = status.upgrade() {
                     message(&status, "Подготовка файлов…", true);
                 }
+                let last_progress = Cell::new((0, std::time::Instant::now()));
                 let timer = glib::timeout_add_local(Duration::from_millis(250), move || {
                     if cb.content().as_ref() != Some(&expected)
                         || sender.upgrade().map_or(true, |sender| sender.is_stopped())
@@ -105,12 +106,23 @@ impl FileRelay {
                     } else if let Some(status) = status.upgrade() {
                         let done = counters.0.load(Relaxed);
                         let total = counters.1.load(Relaxed);
+                        let (previous, changed_at) = last_progress.get();
+                        if done != previous {
+                            last_progress.set((done, std::time::Instant::now()));
+                        }
+                        let waiting =
+                            done == previous && changed_at.elapsed() >= Duration::from_secs(5);
                         if total > 0 {
+                            let phase = if waiting {
+                                "Ожидание исходного сервера"
+                            } else {
+                                "Подготовка файлов"
+                            };
                             const MIB: f64 = 1_048_576.0;
                             message(
                                 &status,
                                 &format!(
-                                    "Подготовка файлов: {:.1} / {:.1} МиБ",
+                                    "{phase}: {:.1} / {:.1} МиБ",
                                     done as f64 / MIB,
                                     total as f64 / MIB
                                 ),
