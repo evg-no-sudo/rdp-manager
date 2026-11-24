@@ -293,6 +293,40 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     fullscreen.set_focus_on_click(false);
     fullscreen.connect_clicked(toggle_fullscreen);
     toolbar.append(&fullscreen);
+    let window_handler = RefCell::new(None::<(glib::WeakRef<gtk::Window>, glib::SignalHandlerId)>);
+    let weak_button = fullscreen.downgrade();
+    root.connect_root_notify(move |root| {
+        if let Some((window, handler)) = window_handler.borrow_mut().take() {
+            if let Some(window) = window.upgrade() {
+                window.disconnect(handler);
+            }
+        }
+        if let (Some(window), Some(button)) = (
+            root.root().and_downcast::<gtk::Window>(),
+            weak_button.upgrade(),
+        ) {
+            let update = |window: &gtk::Window, button: &gtk::Button| {
+                let (icon, tooltip) = if window.is_fullscreen() {
+                    (
+                        "view-restore-symbolic",
+                        "Выйти из полного экрана (Ctrl+Shift+F11)",
+                    )
+                } else {
+                    ("view-fullscreen-symbolic", "Полный экран (Ctrl+Shift+F11)")
+                };
+                button.set_icon_name(icon);
+                button.set_tooltip_text(Some(tooltip));
+            };
+            update(&window, &button);
+            let weak_button = button.downgrade();
+            let handler = window.connect_fullscreened_notify(move |window| {
+                if let Some(button) = weak_button.upgrade() {
+                    update(window, &button);
+                }
+            });
+            window_handler.replace(Some((window.downgrade(), handler)));
+        }
+    });
 
     let fullscreen_keys = gtk::EventControllerKey::new();
     fullscreen_keys.set_propagation_phase(gtk::PropagationPhase::Capture);
@@ -464,7 +498,15 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     });
     options_box.append(&test_text);
     let sender = control.clone();
+    let rendering = Rc::new(Cell::new(true));
+    let rendering_on_disconnect = rendering.clone();
+    let picture_on_disconnect = picture.downgrade();
     disconnect.connect_clicked(move |button| {
+        rendering_on_disconnect.set(false);
+        if let Some(picture) = picture_on_disconnect.upgrade() {
+            picture.set_paintable(None::<&gdk::Paintable>);
+            picture.set_sensitive(false);
+        }
         sender.stop();
         button.set_sensitive(false);
     });
@@ -501,7 +543,11 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
     let measured = Cell::new(None);
     let requested = Cell::new(None);
     let changed_at = Cell::new(std::time::Instant::now());
+    let rendering_on_tick = rendering.clone();
     picture.add_tick_callback(move |picture, _| {
+        if !rendering_on_tick.get() {
+            return glib::ControlFlow::Break;
+        }
         if auto_resize {
             let dimensions =
                 rdp::desktop_size(picture.width(), picture.height(), picture.scale_factor());
@@ -685,6 +731,8 @@ fn open(tabs: &adw::TabView, state: Rc<State>, profile: Profile, config: Config)
                     cad.set_sensitive(false);
                     capture.set_active(false);
                     capture.set_sensitive(false);
+                    rendering.set(false);
+                    picture.set_paintable(None::<&gdk::Paintable>);
                     picture.set_sensitive(false);
                     if let Some(page) = weak_page.upgrade() {
                         page.set_title(&format!("{} — завершён", profile.name));
