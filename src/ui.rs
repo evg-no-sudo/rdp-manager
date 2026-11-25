@@ -357,6 +357,10 @@ fn create_session_window(
         Some(tr!("История подключений…", "Connection History…")),
         Some("win.history"),
     );
+    menu.append(
+        Some(tr!("Что нового…", "What's New…")),
+        Some("win.changelog"),
+    );
     let sort_menu = gtk::gio::Menu::new();
     sort_menu.append(
         Some(tr!("Часто используемые", "Most Used")),
@@ -433,6 +437,7 @@ fn create_session_window(
         ("webdav", crate::webdav_ui::show),
         ("sftp", crate::sftp_ui::show),
         ("history", crate::rdp_ui::history),
+        ("changelog", crate::changelog::show),
     ] {
         let action = gtk::gio::SimpleAction::new(name, None);
         let weak_window = window.downgrade();

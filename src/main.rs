@@ -1,5 +1,6 @@
 #[macro_use]
 mod i18n;
+mod changelog;
 mod clipboard_files;
 mod import_ui;
 mod profiles_ui;
