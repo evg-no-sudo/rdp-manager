@@ -439,10 +439,6 @@ fn create_session_window(
         Some(tr!("История подключений…", "Connection History…")),
         Some("win.history"),
     );
-    menu.append(
-        Some(tr!("Что нового…", "What's New…")),
-        Some("win.changelog"),
-    );
     let sort_menu = gtk::gio::Menu::new();
     sort_menu.append(
         Some(tr!("Часто используемые", "Most Used")),
@@ -474,6 +470,10 @@ fn create_session_window(
     menu.append_submenu(
         Some(tr!("Язык интерфейса", "Interface language")),
         &language,
+    );
+    menu.append(
+        Some(tr!("Что нового…", "What's New…")),
+        Some("win.changelog"),
     );
     let more = gtk::MenuButton::builder()
         .icon_name("view-more-symbolic")
