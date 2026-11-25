@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-26", tr!("Сохраняются размер главного окна и раскрытые папки. Полноэкранное меню закрывается по клику снаружи.", "The main window size and expanded folders are remembered. Click outside the fullscreen menu to dismiss it.")),
         ("0.1.0-25", tr!("Добавлена история изменений в меню приложения.", "Added release notes to the application menu.")),
         ("0.1.0-22 — 0.1.0-24", tr!("Правый клик по полноэкранной панели открывает список подключений. Порядок совпадает с боковой панелью. Группы свёрнуты по умолчанию.", "Right-click the fullscreen toolbar to open saved connections. The order matches the sidebar. Groups start collapsed.")),
         ("0.1.0-20 — 0.1.0-21", tr!("Захват клавиш восстанавливается при возврате в сеанс. Добавлены коды цифрового блока и синхронизация Num Lock.", "Keyboard capture is restored when returning to a session. Added numeric keypad support and Num Lock synchronization.")),

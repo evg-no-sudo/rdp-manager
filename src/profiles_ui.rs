@@ -34,6 +34,7 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
             expanded.insert(toggle_folder.clone());
         }
         drop(expanded);
+        toggle_state.save_view_preferences();
         refresh(&toggle_state);
     });
     heading.append(&toggle);
@@ -97,6 +98,7 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
                     expanded.insert(new.to_owned());
                 }
                 drop(expanded);
+                state.save_view_preferences();
                 refresh(&state);
             }
             Err(error) => {

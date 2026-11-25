@@ -1,6 +1,11 @@
 use crate::store::{Profile, Store};
 use adw::prelude::*;
-use std::{cell::RefCell, collections::HashSet, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    collections::HashSet,
+    io::Write,
+    rc::Rc,
+};
 type SessionStop = (gtk::glib::WeakRef<gtk::Widget>, Rc<dyn Fn()>);
 
 pub(crate) struct ProfileList {
@@ -17,10 +22,22 @@ impl ProfileList {
     }
 }
 
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)]
+struct ViewPreferences {
+    window_size: Option<(i32, i32)>,
+    expanded_folders: HashSet<String>,
+}
+
+fn view_preferences_path() -> std::path::PathBuf {
+    gtk::glib::user_config_dir().join("rdp-manager/view.json")
+}
+
 pub struct State {
     pub store: Store,
     pub(crate) lists: RefCell<Vec<ProfileList>>,
     pub(crate) expanded_folders: RefCell<HashSet<String>>,
+    window_size: Cell<Option<(i32, i32)>>,
     operations: RefCell<HashSet<String>>,
     session_stops: RefCell<Vec<SessionStop>>,
     views: RefCell<
@@ -33,14 +50,45 @@ pub struct State {
 
 impl State {
     pub fn new(store: Store) -> Rc<Self> {
+        let preferences: ViewPreferences = std::fs::read(view_preferences_path())
+            .ok()
+            .and_then(|data| serde_json::from_slice(&data).ok())
+            .unwrap_or_default();
         Rc::new(Self {
             store,
             lists: RefCell::new(Vec::new()),
-            expanded_folders: RefCell::new(HashSet::new()),
+            expanded_folders: RefCell::new(preferences.expanded_folders),
+            window_size: Cell::new(
+                preferences
+                    .window_size
+                    .filter(|&(w, h)| (320..=16384).contains(&w) && (240..=16384).contains(&h)),
+            ),
             operations: RefCell::new(HashSet::new()),
             session_stops: RefCell::new(Vec::new()),
             views: RefCell::new(Vec::new()),
         })
+    }
+
+    pub(crate) fn save_view_preferences(&self) {
+        let save = || -> std::io::Result<()> {
+            let path = view_preferences_path();
+            let dir = gtk::glib::user_config_dir().join("rdp-manager");
+            std::fs::create_dir_all(&dir)?;
+            let mut file = tempfile::NamedTempFile::new_in(dir)?;
+            serde_json::to_writer(
+                &mut file,
+                &ViewPreferences {
+                    window_size: self.window_size.get(),
+                    expanded_folders: self.expanded_folders.borrow().clone(),
+                },
+            )?;
+            file.flush()?;
+            file.persist(path)?;
+            Ok(())
+        };
+        if let Err(error) = save() {
+            eprintln!("Could not save view preferences: {error}");
+        }
     }
 
     pub fn tabs_for(&self, target: &adw::ApplicationWindow) -> Option<adw::TabView> {
@@ -154,7 +202,7 @@ fn install_fullscreen_connections(
     gesture.set_button(3);
     let weak_bar = bar.downgrade();
     let state = state.clone();
-    gesture.connect_pressed(move |gesture, _, x, y| {
+    gesture.connect_released(move |gesture, _, x, y| {
         let Some(bar) = weak_bar.upgrade() else {
             return;
         };
@@ -182,7 +230,7 @@ fn install_fullscreen_connections(
         let (Some(tabs), Some(window)) = (weak_tabs.upgrade(), weak_window.upgrade()) else {
             return;
         };
-        let popup = gtk::Popover::new();
+        let popup = gtk::Popover::builder().autohide(true).build();
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let folders = state.store.profile_folders().unwrap_or_default();
         match state.store.profiles() {
@@ -207,9 +255,23 @@ fn install_fullscreen_connections(
                         };
                         let expander = gtk::Expander::builder()
                             .label(title)
-                            .expanded(false)
+                            .expanded(state.expanded_folders.borrow().contains(folder))
                             .child(&group)
                             .build();
+                        let state = state.clone();
+                        let folder_name = folder.to_owned();
+                        expander.connect_expanded_notify(move |expander| {
+                            if expander.is_expanded() {
+                                state
+                                    .expanded_folders
+                                    .borrow_mut()
+                                    .insert(folder_name.clone());
+                            } else {
+                                state.expanded_folders.borrow_mut().remove(&folder_name);
+                            }
+                            state.save_view_preferences();
+                            crate::profiles_ui::refresh(&state);
+                        });
                         items.append(&expander);
                         previous = Some(folder);
                     }
@@ -254,8 +316,13 @@ fn install_fullscreen_connections(
                 popup.unparent();
             }
         });
-        popup.popup();
         gesture.set_state(gtk::EventSequenceState::Claimed);
+        let popup = popup.downgrade();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(popup) = popup.upgrade().filter(|popup| popup.root().is_some()) {
+                popup.popup();
+            }
+        });
     });
     bar.add_controller(gesture);
 }
@@ -267,16 +334,31 @@ pub fn create_window(
     create_session_window(app, state, None)
 }
 
+fn remember_window_size(window: &adw::ApplicationWindow, state: &State) {
+    if window.is_mapped() && !window.is_fullscreen() && !window.is_maximized() {
+        let (width, height) = (window.width(), window.height());
+        if width >= 320 && height >= 240 {
+            state.window_size.set(Some((width, height)));
+        }
+    }
+}
+
 fn create_session_window(
     app: &adw::Application,
     state: Rc<State>,
     origin: Option<gtk::glib::WeakRef<adw::TabView>>,
 ) -> (adw::ApplicationWindow, adw::TabView) {
+    let main_window = origin.is_none();
+    let (width, height) = if main_window {
+        state.window_size.get().unwrap_or((1100, 720))
+    } else {
+        (1100, 720)
+    };
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("Linux RDP Manager")
-        .default_width(1100)
-        .default_height(720)
+        .default_width(width)
+        .default_height(height)
         .build();
     let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
     let header = adw::HeaderBar::new();
@@ -574,7 +656,18 @@ fn create_session_window(
     });
     let weak_tabs = tabs.downgrade();
     let close_state = state.clone();
-    window.connect_close_request(move |_| {
+    if main_window {
+        let size_state = state.clone();
+        window.add_tick_callback(move |window, _| {
+            remember_window_size(window, &size_state);
+            gtk::glib::ControlFlow::Continue
+        });
+    }
+    window.connect_close_request(move |window| {
+        if main_window {
+            remember_window_size(window, &close_state);
+            close_state.save_view_preferences();
+        }
         if let Some(tabs) = weak_tabs.upgrade() {
             for index in 0..tabs.n_pages() {
                 close_state.close_session(&tabs.nth_page(index).child());

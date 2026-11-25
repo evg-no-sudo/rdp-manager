@@ -21,7 +21,7 @@ A native RDP client built with Rust, GTK4, libadwaita and FreeRDP. The main test
 The first package targets Linux Mint 22.3, amd64. It includes the tested FreeRDP/WinPR 3.32.2 build, and APT resolves the remaining dependencies. After installation, look for **Linux RDP Manager** in the application menu.
 
 ```sh
-sudo apt install ./target/dist/rdp-manager_0.1.0-25_amd64.deb
+sudo apt install ./target/dist/rdp-manager_0.1.0-26_amd64.deb
 rdp-manager
 ```
 
