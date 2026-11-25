@@ -2,6 +2,8 @@
 
 [English](README.en.md) · [Планы](ROADMAP.md)
 
+**Разработчик:** Evgeny Anishchenkov
+
 Нативный RDP-клиент на Rust, GTK4, libadwaita и FreeRDP. Основная проверенная среда — Linux Mint 22.3 Cinnamon/X11, серверы Windows RDP и Linux/xrdp. KDE Plasma, GNOME и нативный Wayland входят в целевую матрицу. Полный набор проверок для них ещё предстоит выполнить.
 
 ## Возможности

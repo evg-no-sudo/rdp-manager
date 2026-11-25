@@ -2,6 +2,8 @@
 
 [Русский](README.md) · [Roadmap](ROADMAP.en.md)
 
+**Developer:** Evgeny Anishchenkov
+
 A native RDP client built with Rust, GTK4, libadwaita and FreeRDP. The main tested environment is Linux Mint 22.3 with Cinnamon on X11, connecting to Windows RDP and Linux/xrdp servers. KDE Plasma, GNOME and native Wayland are target environments. Full coverage is still pending.
 
 ## Features
