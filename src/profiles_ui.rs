@@ -14,7 +14,7 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
     } else {
         folder
     };
-    let collapsed = state.collapsed_folders.borrow().contains(folder);
+    let collapsed = !state.expanded_folders.borrow().contains(folder);
     let toggle = gtk::Button::from_icon_name(if collapsed {
         "pan-end-symbolic"
     } else {
@@ -29,11 +29,11 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
     let toggle_state = state.clone();
     let toggle_folder = folder.to_owned();
     toggle.connect_clicked(move |_| {
-        let mut collapsed = toggle_state.collapsed_folders.borrow_mut();
-        if !collapsed.remove(&toggle_folder) {
-            collapsed.insert(toggle_folder.clone());
+        let mut expanded = toggle_state.expanded_folders.borrow_mut();
+        if !expanded.remove(&toggle_folder) {
+            expanded.insert(toggle_folder.clone());
         }
-        drop(collapsed);
+        drop(expanded);
         refresh(&toggle_state);
     });
     heading.append(&toggle);
@@ -92,11 +92,11 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
         let new = value.trim();
         match state.store.rename_folder(&old, new) {
             Ok(()) => {
-                let mut collapsed = state.collapsed_folders.borrow_mut();
-                if collapsed.remove(&old) {
-                    collapsed.insert(new.to_owned());
+                let mut expanded = state.expanded_folders.borrow_mut();
+                if expanded.remove(&old) {
+                    expanded.insert(new.to_owned());
                 }
-                drop(collapsed);
+                drop(expanded);
                 refresh(&state);
             }
             Err(error) => {

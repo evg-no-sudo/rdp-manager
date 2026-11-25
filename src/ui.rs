@@ -20,7 +20,7 @@ impl ProfileList {
 pub struct State {
     pub store: Store,
     pub(crate) lists: RefCell<Vec<ProfileList>>,
-    pub(crate) collapsed_folders: RefCell<HashSet<String>>,
+    pub(crate) expanded_folders: RefCell<HashSet<String>>,
     operations: RefCell<HashSet<String>>,
     session_stops: RefCell<Vec<SessionStop>>,
     views: RefCell<
@@ -36,7 +36,7 @@ impl State {
         Rc::new(Self {
             store,
             lists: RefCell::new(Vec::new()),
-            collapsed_folders: RefCell::new(HashSet::new()),
+            expanded_folders: RefCell::new(HashSet::new()),
             operations: RefCell::new(HashSet::new()),
             session_stops: RefCell::new(Vec::new()),
             views: RefCell::new(Vec::new()),
@@ -207,7 +207,7 @@ fn install_fullscreen_connections(
                         };
                         let expander = gtk::Expander::builder()
                             .label(title)
-                            .expanded(true)
+                            .expanded(false)
                             .child(&group)
                             .build();
                         items.append(&expander);
@@ -464,8 +464,8 @@ fn create_session_window(
             .unwrap_or_default();
         if query.is_empty() {
             return !row.is::<adw::ActionRow>()
-                || !filter_state
-                    .collapsed_folders
+                || filter_state
+                    .expanded_folders
                     .borrow()
                     .contains(row.widget_name().as_str());
         }
