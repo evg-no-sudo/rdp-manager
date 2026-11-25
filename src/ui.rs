@@ -202,7 +202,7 @@ fn install_fullscreen_connections(
     gesture.set_button(3);
     let weak_bar = bar.downgrade();
     let state = state.clone();
-    gesture.connect_released(move |gesture, _, x, y| {
+    gesture.connect_pressed(move |gesture, _, x, y| {
         let Some(bar) = weak_bar.upgrade() else {
             return;
         };
@@ -230,7 +230,7 @@ fn install_fullscreen_connections(
         let (Some(tabs), Some(window)) = (weak_tabs.upgrade(), weak_window.upgrade()) else {
             return;
         };
-        let popup = gtk::Popover::builder().autohide(true).build();
+        let popup = gtk::Popover::builder().autohide(false).build();
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let folders = state.store.profile_folders().unwrap_or_default();
         match state.store.profiles() {
@@ -247,7 +247,7 @@ fn install_fullscreen_connections(
                 for profile in profiles {
                     let folder = folders.get(&profile.uid).map(String::as_str).unwrap_or("");
                     if previous != Some(folder) {
-                        group = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                        group = gtk::Box::new(gtk::Orientation::Vertical, 0);
                         let title = if folder.is_empty() {
                             tr!("Без папки", "Ungrouped")
                         } else {
@@ -275,7 +275,13 @@ fn install_fullscreen_connections(
                         items.append(&expander);
                         previous = Some(folder);
                     }
-                    let button = gtk::Button::with_label(&profile.name);
+                    let label = gtk::Label::builder()
+                        .label(&profile.name)
+                        .xalign(0.0)
+                        .ellipsize(gtk::pango::EllipsizeMode::End)
+                        .build();
+                    let button = gtk::Button::builder().child(&label).build();
+                    button.add_css_class("fullscreen-server");
                     button.add_css_class("flat");
                     let (popup, tabs, window) =
                         (popup.downgrade(), tabs.downgrade(), window.downgrade());
@@ -311,18 +317,53 @@ fn install_fullscreen_connections(
         popup.set_child(Some(&scroll));
         popup.set_parent(&bar);
         popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
-        popup.connect_closed(|popup| {
+        let outside = gtk::GestureClick::new();
+        outside.set_button(0);
+        outside.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_popup = popup.downgrade();
+        outside.connect_pressed(move |gesture, _, _, _| {
+            let Some(popup) = weak_popup.upgrade() else {
+                return;
+            };
+            let clicked_surface = gesture.current_event().and_then(|event| event.surface());
+            if clicked_surface.is_some() && clicked_surface != popup.surface() {
+                popup.popdown();
+            }
+        });
+        window.add_controller(outside.clone());
+
+        let keys = gtk::EventControllerKey::new();
+        keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+        let weak_popup = popup.downgrade();
+        keys.connect_key_pressed(move |_, key, _, _| {
+            if key == gtk::gdk::Key::Escape {
+                if let Some(popup) = weak_popup.upgrade().filter(|popup| popup.is_visible()) {
+                    popup.popdown();
+                    return gtk::glib::Propagation::Stop;
+                }
+            }
+            gtk::glib::Propagation::Proceed
+        });
+        window.add_controller(keys.clone());
+
+        let weak_window = window.downgrade();
+        let weak_outside = outside.downgrade();
+        let weak_keys = keys.downgrade();
+        popup.connect_closed(move |popup| {
+            if let Some(window) = weak_window.upgrade() {
+                if let Some(controller) = weak_outside.upgrade() {
+                    window.remove_controller(&controller);
+                }
+                if let Some(controller) = weak_keys.upgrade() {
+                    window.remove_controller(&controller);
+                }
+            }
             if popup.parent().is_some() {
                 popup.unparent();
             }
         });
         gesture.set_state(gtk::EventSequenceState::Claimed);
-        let popup = popup.downgrade();
-        gtk::glib::idle_add_local_once(move || {
-            if let Some(popup) = popup.upgrade().filter(|popup| popup.root().is_some()) {
-                popup.popup();
-            }
-        });
+        popup.popup();
     });
     bar.add_controller(gesture);
 }

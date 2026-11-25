@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-28", tr!("Уплотнён список серверов. Клик за пределами меню закрывает его и продолжает выбранное действие.", "Made the server list more compact. Clicking outside dismisses it and allows the clicked control to work.")),
         ("0.1.0-27", tr!("Пункт «Что нового…» перенесён в конец меню.", "Moved What's New to the bottom of the menu.")),
         ("0.1.0-26", tr!("Сохраняются размер главного окна и раскрытые папки. Полноэкранное меню закрывается по клику снаружи.", "The main window size and expanded folders are remembered. Click outside the fullscreen menu to dismiss it.")),
         ("0.1.0-25", tr!("Добавлена история изменений в меню приложения.", "Added release notes to the application menu.")),

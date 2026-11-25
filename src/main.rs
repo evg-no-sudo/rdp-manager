@@ -85,6 +85,16 @@ fn main() -> gtk::glib::ExitCode {
     app.connect_startup(|app| {
         install_theme_action(app);
         i18n::install_action(app);
+        if let Some(display) = gtk::gdk::Display::default() {
+            let css = gtk::CssProvider::new();
+            css.load_from_string("button.fullscreen-server { min-height: 0; padding: 3px 8px; }");
+            gtk::style_context_add_provider_for_display(
+                &display,
+                &css,
+                gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+            );
+        }
+
         if let (Some(display), Some(path)) = (
             gtk::gdk::Display::default(),
             std::env::var_os("RDP_MANAGER_ICON_PATH"),
