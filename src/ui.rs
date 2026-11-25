@@ -143,6 +143,111 @@ fn place_session_toolbar(
     }
 }
 
+fn install_fullscreen_connections(
+    bar: &adw::TabBar,
+    tabs: &adw::TabView,
+    window: &adw::ApplicationWindow,
+    state: &Rc<State>,
+) {
+    let connect =
+        gtk::gio::SimpleAction::new("connect-from-toolbar", Some(gtk::glib::VariantTy::STRING));
+    let (weak_tabs, weak_window) = (tabs.downgrade(), window.downgrade());
+    let connect_state = state.clone();
+    connect.connect_activate(move |_, value| {
+        let (Some(uid), Some(tabs), Some(window)) = (
+            value.and_then(gtk::glib::Variant::str),
+            weak_tabs.upgrade(),
+            weak_window.upgrade(),
+        ) else {
+            return;
+        };
+        if let Some(profile) = connect_state
+            .store
+            .profiles()
+            .ok()
+            .and_then(|profiles| profiles.into_iter().find(|profile| profile.uid == uid))
+        {
+            crate::rdp_ui::connect(&window, &tabs, connect_state.clone(), profile);
+        }
+    });
+    window.add_action(&connect);
+
+    let gesture = gtk::GestureClick::new();
+    gesture.set_button(3);
+    let weak_bar = bar.downgrade();
+    let state = state.clone();
+    gesture.connect_pressed(move |gesture, _, x, y| {
+        let Some(bar) = weak_bar.upgrade() else {
+            return;
+        };
+        if !bar
+            .root()
+            .and_downcast::<gtk::Window>()
+            .is_some_and(|window| window.is_fullscreen())
+        {
+            return;
+        }
+        let mut hit = bar.pick(x, y, gtk::PickFlags::DEFAULT);
+        while let Some(widget) = hit {
+            if widget == bar {
+                break;
+            }
+            if widget.is::<gtk::Button>()
+                || widget.is::<gtk::MenuButton>()
+                || widget.css_name() == "tab"
+            {
+                return;
+            }
+            hit = widget.parent();
+        }
+
+        let menu = gtk::gio::Menu::new();
+        let mut groups = std::collections::BTreeMap::<String, gtk::gio::Menu>::new();
+        let folders = state.store.profile_folders().unwrap_or_default();
+        match state.store.profiles() {
+            Ok(profiles) if !profiles.is_empty() => {
+                for profile in profiles {
+                    let item = gtk::gio::MenuItem::new(Some(&profile.name), None);
+                    item.set_action_and_target_value(
+                        Some("win.connect-from-toolbar"),
+                        Some(&profile.uid.to_variant()),
+                    );
+                    if let Some(folder) = folders.get(&profile.uid) {
+                        groups.entry(folder.clone()).or_default().append_item(&item);
+                    } else {
+                        menu.append_item(&item);
+                    }
+                }
+                for (folder, items) in groups {
+                    menu.append_submenu(Some(&folder), &items);
+                }
+            }
+            Ok(_) => menu.append(
+                Some(tr!("Нет сохранённых подключений", "No saved connections")),
+                None,
+            ),
+            Err(_) => menu.append(
+                Some(tr!(
+                    "Не удалось загрузить подключения",
+                    "Could not load connections"
+                )),
+                None,
+            ),
+        }
+        let popup = gtk::PopoverMenu::from_model(Some(&menu));
+        popup.set_parent(&bar);
+        popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popup.connect_closed(|popup| {
+            if popup.parent().is_some() {
+                popup.unparent();
+            }
+        });
+        popup.popup();
+        gesture.set_state(gtk::EventSequenceState::Claimed);
+    });
+    bar.add_controller(gesture);
+}
+
 pub fn create_window(
     app: &adw::Application,
     state: Rc<State>,
@@ -471,6 +576,7 @@ fn create_session_window(
     tabs.set_hexpand(true);
     tabs.set_vexpand(true);
     let bar = adw::TabBar::builder().view(&tabs).autohide(false).build();
+    install_fullscreen_connections(&bar, &tabs, &window, &state);
     let content = gtk::Box::new(gtk::Orientation::Vertical, 0);
     content.set_hexpand(true);
     content.append(&bar);
