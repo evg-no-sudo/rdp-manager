@@ -269,8 +269,7 @@ fn install_fullscreen_connections(
                             } else {
                                 state.expanded_folders.borrow_mut().remove(&folder_name);
                             }
-                            state.save_view_preferences();
-                            crate::profiles_ui::refresh(&state);
+                            crate::profiles_ui::update_folder_visibility(&state, &folder_name);
                         });
                         items.append(&expander);
                         previous = Some(folder);

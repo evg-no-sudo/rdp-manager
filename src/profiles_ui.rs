@@ -7,15 +7,8 @@ use adw::prelude::*;
 use std::{cell::Cell, rc::Rc};
 use zeroize::Zeroizing;
 
-fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
-    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
-    let title = if folder.is_empty() {
-        tr!("Без папки", "Ungrouped")
-    } else {
-        folder
-    };
-    let collapsed = !state.expanded_folders.borrow().contains(folder);
-    let toggle = gtk::Button::from_icon_name(if collapsed {
+fn update_folder_arrow(toggle: &gtk::Button, collapsed: bool) {
+    toggle.set_icon_name(if collapsed {
         "pan-end-symbolic"
     } else {
         "pan-down-symbolic"
@@ -25,6 +18,46 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
     } else {
         tr!("Свернуть папку", "Collapse Folder")
     }));
+}
+
+pub(crate) fn update_folder_visibility(state: &Rc<State>, folder: &str) {
+    let collapsed = !state.expanded_folders.borrow().contains(folder);
+    for list in state
+        .lists
+        .borrow()
+        .iter()
+        .filter_map(|view| view.list.upgrade())
+    {
+        let mut child = list.first_child();
+        while let Some(widget) = child {
+            child = widget.next_sibling();
+            if widget.is::<adw::ActionRow>() || widget.widget_name() != folder {
+                continue;
+            }
+            if let Some(button) = widget
+                .first_child()
+                .and_then(|heading| heading.first_child())
+                .and_downcast::<gtk::Button>()
+            {
+                update_folder_arrow(&button, collapsed);
+            }
+            break;
+        }
+        list.invalidate_filter();
+    }
+    let state = state.clone();
+    gtk::glib::idle_add_local_once(move || state.save_view_preferences());
+}
+
+fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 4);
+    let title = if folder.is_empty() {
+        tr!("Без папки", "Ungrouped")
+    } else {
+        folder
+    };
+    let toggle = gtk::Button::new();
+    update_folder_arrow(&toggle, !state.expanded_folders.borrow().contains(folder));
     toggle.add_css_class("flat");
     let toggle_state = state.clone();
     let toggle_folder = folder.to_owned();
@@ -34,8 +67,7 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
             expanded.insert(toggle_folder.clone());
         }
         drop(expanded);
-        toggle_state.save_view_preferences();
-        refresh(&toggle_state);
+        update_folder_visibility(&toggle_state, &toggle_folder);
     });
     heading.append(&toggle);
     let title = gtk::Label::builder()
@@ -60,11 +92,13 @@ fn folder_header(state: &Rc<State>, folder: &str) -> gtk::ListBoxRow {
         });
         heading.append(&rename);
     }
-    gtk::ListBoxRow::builder()
+    let row = gtk::ListBoxRow::builder()
         .selectable(false)
         .activatable(false)
         .child(&heading)
-        .build()
+        .build();
+    row.set_widget_name(folder);
+    row
 }
 
 fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
