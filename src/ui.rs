@@ -27,6 +27,7 @@ impl ProfileList {
 struct ViewPreferences {
     window_size: Option<(i32, i32)>,
     expanded_folders: HashSet<String>,
+    fullscreen_folder: Option<String>,
 }
 
 fn view_preferences_path() -> std::path::PathBuf {
@@ -37,6 +38,7 @@ pub struct State {
     pub store: Store,
     pub(crate) lists: RefCell<Vec<ProfileList>>,
     pub(crate) expanded_folders: RefCell<HashSet<String>>,
+    pub(crate) fullscreen_folder: RefCell<Option<String>>,
     window_size: Cell<Option<(i32, i32)>>,
     operations: RefCell<HashSet<String>>,
     session_stops: RefCell<Vec<SessionStop>>,
@@ -58,6 +60,7 @@ impl State {
             store,
             lists: RefCell::new(Vec::new()),
             expanded_folders: RefCell::new(preferences.expanded_folders),
+            fullscreen_folder: RefCell::new(preferences.fullscreen_folder),
             window_size: Cell::new(
                 preferences
                     .window_size
@@ -80,6 +83,7 @@ impl State {
                 &ViewPreferences {
                     window_size: self.window_size.get(),
                     expanded_folders: self.expanded_folders.borrow().clone(),
+                    fullscreen_folder: self.fullscreen_folder.borrow().clone(),
                 },
             )?;
             file.flush()?;
@@ -255,21 +259,33 @@ fn install_fullscreen_connections(
                         };
                         let expander = gtk::Expander::builder()
                             .label(title)
-                            .expanded(state.expanded_folders.borrow().contains(folder))
+                            .expanded(state.fullscreen_folder.borrow().as_deref() == Some(folder))
                             .child(&group)
                             .build();
                         let state = state.clone();
                         let folder_name = folder.to_owned();
                         expander.connect_expanded_notify(move |expander| {
                             if expander.is_expanded() {
-                                state
-                                    .expanded_folders
-                                    .borrow_mut()
-                                    .insert(folder_name.clone());
+                                state.fullscreen_folder.replace(Some(folder_name.clone()));
+                                let mut sibling =
+                                    expander.parent().and_then(|parent| parent.first_child());
+                                while let Some(widget) = sibling {
+                                    sibling = widget.next_sibling();
+                                    if let Ok(other) = widget.downcast::<gtk::Expander>() {
+                                        if other != *expander {
+                                            other.set_expanded(false);
+                                        }
+                                    }
+                                }
+                            } else if state.fullscreen_folder.borrow().as_deref()
+                                == Some(&folder_name)
+                            {
+                                state.fullscreen_folder.replace(None);
                             } else {
-                                state.expanded_folders.borrow_mut().remove(&folder_name);
+                                return;
                             }
-                            crate::profiles_ui::update_folder_visibility(&state, &folder_name);
+                            let state = state.clone();
+                            gtk::glib::idle_add_local_once(move || state.save_view_preferences());
                         });
                         items.append(&expander);
                         previous = Some(folder);
@@ -279,7 +295,10 @@ fn install_fullscreen_connections(
                         .xalign(0.0)
                         .ellipsize(gtk::pango::EllipsizeMode::End)
                         .build();
-                    let button = gtk::Button::builder().child(&label).build();
+                    let button = gtk::Button::builder()
+                        .child(&label)
+                        .tooltip_text(&profile.name)
+                        .build();
                     button.add_css_class("fullscreen-server");
                     button.add_css_class("flat");
                     let (popup, tabs, window) =
@@ -308,7 +327,7 @@ fn install_fullscreen_connections(
         }
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_width(240)
+            .min_content_width(300)
             .max_content_height(420)
             .propagate_natural_height(true)
             .child(&items)

@@ -132,6 +132,9 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
                     expanded.insert(new.to_owned());
                 }
                 drop(expanded);
+                if state.fullscreen_folder.borrow().as_deref() == Some(old.as_str()) {
+                    state.fullscreen_folder.replace(Some(new.to_owned()));
+                }
                 state.save_view_preferences();
                 refresh(&state);
             }
