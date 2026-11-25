@@ -15,6 +15,21 @@ fn special(key: gdk::Key) -> Option<u16> {
         K::Tab | K::ISO_Left_Tab => 15,
         K::Return => 28,
         K::KP_Enter => 0x11c,
+        K::KP_Divide => 0x135,
+        K::KP_Multiply => 0x37,
+        K::KP_Subtract => 0x4a,
+        K::KP_Add => 0x4e,
+        K::KP_7 | K::KP_Home => 0x47,
+        K::KP_8 | K::KP_Up => 0x48,
+        K::KP_9 | K::KP_Page_Up => 0x49,
+        K::KP_4 | K::KP_Left => 0x4b,
+        K::KP_5 | K::KP_Begin => 0x4c,
+        K::KP_6 | K::KP_Right => 0x4d,
+        K::KP_1 | K::KP_End => 0x4f,
+        K::KP_2 | K::KP_Down => 0x50,
+        K::KP_3 | K::KP_Page_Down => 0x51,
+        K::KP_0 | K::KP_Insert => 0x52,
+        K::KP_Decimal | K::KP_Separator | K::KP_Delete => 0x53,
         K::Control_L => 29,
         K::Control_R => 0x11d,
         K::Shift_L => 42,
@@ -424,11 +439,20 @@ pub fn attach(
         }
         refresh_capture();
     });
-    focus.connect_enter(move |_| {
+    focus.connect_enter(move |controller| {
         input.focus_in();
+        let flags = controller
+            .widget()
+            .and_then(|widget| widget.display().default_seat())
+            .and_then(|seat| seat.keyboard())
+            .map_or(0, |keyboard| {
+                u16::from(keyboard.is_scroll_locked())
+                    | (u16::from(keyboard.is_num_locked()) << 1)
+                    | (u16::from(keyboard.is_caps_locked()) << 2)
+            });
         sender.send(Input {
             kind: 5,
-            flags: 0,
+            flags,
             a: 0,
             b: 0,
         });
@@ -472,6 +496,10 @@ mod tests {
         assert!(!stale_modifier(30, gdk::ModifierType::empty()));
         assert_eq!(special(gdk::Key::Control_R), Some(0x11d));
         assert_eq!(special(gdk::Key::Delete), Some(0x153));
+        assert_eq!(special(gdk::Key::KP_Delete), Some(0x53));
+        assert_eq!(special(gdk::Key::KP_7), special(gdk::Key::KP_Home));
+        assert_eq!(physical_scan(gdk::Key::KP_1, &[]), Some(0x4f));
+        assert_eq!(special(gdk::Key::KP_Divide), Some(0x135));
         assert_eq!(shortcut(gdk::Key::C), Some(46));
         assert_eq!(shortcut(gdk::Key::F1), None);
         assert_eq!(russian_scan(gdk::Key::Cyrillic_ef), Some(30));
