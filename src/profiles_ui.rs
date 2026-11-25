@@ -117,6 +117,26 @@ fn rename_folder(window: &gtk::Window, state: Rc<State>, old: String) {
     dialog.present(Some(window));
 }
 
+pub(crate) fn sort_profiles(
+    profiles: &mut [&Profile],
+    folders: &std::collections::HashMap<String, String>,
+    counts: &std::collections::HashMap<String, u64>,
+    frequently: bool,
+) {
+    profiles.sort_by_cached_key(|profile| {
+        let count = if frequently {
+            counts.get(&profile.uid).copied().unwrap_or(0)
+        } else {
+            0
+        };
+        (
+            folders.get(&profile.uid),
+            std::cmp::Reverse(count),
+            profile.name.to_lowercase(),
+        )
+    });
+}
+
 pub fn refresh(state: &Rc<State>) {
     state
         .lists
@@ -150,18 +170,7 @@ pub fn refresh(state: &Rc<State>) {
             }
             Ok(profiles) => {
                 let mut profiles: Vec<_> = profiles.iter().collect();
-                profiles.sort_by_cached_key(|profile| {
-                    let count = if frequently {
-                        counts.get(&profile.uid).copied().unwrap_or(0)
-                    } else {
-                        0
-                    };
-                    (
-                        folders.get(&profile.uid),
-                        std::cmp::Reverse(count),
-                        profile.name.to_lowercase(),
-                    )
-                });
+                sort_profiles(&mut profiles, &folders, &counts, frequently);
                 let mut previous = None;
                 for profile in profiles {
                     let folder = folders.get(&profile.uid).map(String::as_str).unwrap_or("");

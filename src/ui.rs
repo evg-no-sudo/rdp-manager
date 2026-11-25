@@ -149,29 +149,7 @@ fn install_fullscreen_connections(
     window: &adw::ApplicationWindow,
     state: &Rc<State>,
 ) {
-    let connect =
-        gtk::gio::SimpleAction::new("connect-from-toolbar", Some(gtk::glib::VariantTy::STRING));
     let (weak_tabs, weak_window) = (tabs.downgrade(), window.downgrade());
-    let connect_state = state.clone();
-    connect.connect_activate(move |_, value| {
-        let (Some(uid), Some(tabs), Some(window)) = (
-            value.and_then(gtk::glib::Variant::str),
-            weak_tabs.upgrade(),
-            weak_window.upgrade(),
-        ) else {
-            return;
-        };
-        if let Some(profile) = connect_state
-            .store
-            .profiles()
-            .ok()
-            .and_then(|profiles| profiles.into_iter().find(|profile| profile.uid == uid))
-        {
-            crate::rdp_ui::connect(&window, &tabs, connect_state.clone(), profile);
-        }
-    });
-    window.add_action(&connect);
-
     let gesture = gtk::GestureClick::new();
     gesture.set_button(3);
     let weak_bar = bar.downgrade();
@@ -201,40 +179,74 @@ fn install_fullscreen_connections(
             hit = widget.parent();
         }
 
-        let menu = gtk::gio::Menu::new();
-        let mut groups = std::collections::BTreeMap::<String, gtk::gio::Menu>::new();
+        let (Some(tabs), Some(window)) = (weak_tabs.upgrade(), weak_window.upgrade()) else {
+            return;
+        };
+        let popup = gtk::Popover::new();
+        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let folders = state.store.profile_folders().unwrap_or_default();
         match state.store.profiles() {
             Ok(profiles) if !profiles.is_empty() => {
+                let frequently = window
+                    .lookup_action("sort-profiles")
+                    .and_then(|action| action.state())
+                    .is_some_and(|value| value.str() == Some("frequent"));
+                let counts = state.store.connection_counts().unwrap_or_default();
+                let mut profiles: Vec<_> = profiles.iter().collect();
+                crate::profiles_ui::sort_profiles(&mut profiles, &folders, &counts, frequently);
+                let mut previous = None;
+                let mut group = items.clone();
                 for profile in profiles {
-                    let item = gtk::gio::MenuItem::new(Some(&profile.name), None);
-                    item.set_action_and_target_value(
-                        Some("win.connect-from-toolbar"),
-                        Some(&profile.uid.to_variant()),
-                    );
-                    if let Some(folder) = folders.get(&profile.uid) {
-                        groups.entry(folder.clone()).or_default().append_item(&item);
-                    } else {
-                        menu.append_item(&item);
+                    let folder = folders.get(&profile.uid).map(String::as_str).unwrap_or("");
+                    if previous != Some(folder) {
+                        group = gtk::Box::new(gtk::Orientation::Vertical, 2);
+                        let title = if folder.is_empty() {
+                            tr!("Без папки", "Ungrouped")
+                        } else {
+                            folder
+                        };
+                        let expander = gtk::Expander::builder()
+                            .label(title)
+                            .expanded(true)
+                            .child(&group)
+                            .build();
+                        items.append(&expander);
+                        previous = Some(folder);
                     }
-                }
-                for (folder, items) in groups {
-                    menu.append_submenu(Some(&folder), &items);
+                    let button = gtk::Button::with_label(&profile.name);
+                    button.add_css_class("flat");
+                    let (popup, tabs, window) =
+                        (popup.downgrade(), tabs.downgrade(), window.downgrade());
+                    let state = state.clone();
+                    let profile = profile.clone();
+                    button.connect_clicked(move |_| {
+                        if let Some(popup) = popup.upgrade() {
+                            popup.popdown();
+                        }
+                        if let (Some(tabs), Some(window)) = (tabs.upgrade(), window.upgrade()) {
+                            crate::rdp_ui::connect(&window, &tabs, state.clone(), profile.clone());
+                        }
+                    });
+                    group.append(&button);
                 }
             }
-            Ok(_) => menu.append(
-                Some(tr!("Нет сохранённых подключений", "No saved connections")),
-                None,
-            ),
-            Err(_) => menu.append(
-                Some(tr!(
-                    "Не удалось загрузить подключения",
-                    "Could not load connections"
-                )),
-                None,
-            ),
+            Ok(_) => items.append(&gtk::Label::new(Some(tr!(
+                "Нет сохранённых подключений",
+                "No saved connections"
+            )))),
+            Err(_) => items.append(&gtk::Label::new(Some(tr!(
+                "Не удалось загрузить подключения",
+                "Could not load connections"
+            )))),
         }
-        let popup = gtk::PopoverMenu::from_model(Some(&menu));
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .min_content_width(240)
+            .max_content_height(420)
+            .propagate_natural_height(true)
+            .child(&items)
+            .build();
+        popup.set_child(Some(&scroll));
         popup.set_parent(&bar);
         popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         popup.connect_closed(|popup| {
