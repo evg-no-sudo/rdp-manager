@@ -129,7 +129,11 @@ fn update_capture(
     if let Some(top) = previous {
         top.restore_system_shortcuts();
     }
-    if wanted && picture.has_focus() {
+    let active = picture
+        .root()
+        .and_downcast::<gtk::Window>()
+        .is_some_and(|window| window.is_active());
+    if wanted && active && picture.is_mapped() && picture.is_sensitive() && picture.has_focus() {
         if let Some(top) = picture
             .native()
             .and_then(|native| native.surface())
@@ -385,14 +389,42 @@ pub fn attach(
     let focus = gtk::EventControllerFocus::new();
     let input = im.clone();
     let sender = control.clone();
-    let capture_enter = capture.downgrade();
-    let weak_picture = picture.downgrade();
-    let captured_enter = captured.clone();
-    focus.connect_enter(move |_| {
-        if let (Some(button), Some(picture)) = (capture_enter.upgrade(), weak_picture.upgrade()) {
-            update_capture(&picture, &captured_enter, button.is_active());
+    let refresh_capture = {
+        let button = capture.downgrade();
+        let picture = picture.downgrade();
+        let captured = captured.clone();
+        move || {
+            let (Some(picture), Some(button)) = (picture.upgrade(), button.upgrade()) else {
+                return;
+            };
+            update_capture(&picture, &captured, button.is_active());
         }
-
+    };
+    let refresh_on_focus = refresh_capture.clone();
+    picture.connect_has_focus_notify(move |_| refresh_on_focus());
+    let refresh_on_map = refresh_capture.clone();
+    picture.connect_map(move |_| refresh_on_map());
+    let grabbed_on_unmap = captured.clone();
+    picture.connect_unmap(move |_| {
+        if let Some(top) = grabbed_on_unmap.borrow_mut().take() {
+            top.restore_system_shortcuts();
+        }
+    });
+    let window_handler = RefCell::new(None::<(glib::WeakRef<gtk::Window>, glib::SignalHandlerId)>);
+    picture.connect_root_notify(move |picture| {
+        if let Some((window, handler)) = window_handler.borrow_mut().take() {
+            if let Some(window) = window.upgrade() {
+                window.disconnect(handler);
+            }
+        }
+        if let Some(window) = picture.root().and_downcast::<gtk::Window>() {
+            let refresh = refresh_capture.clone();
+            let handler = window.connect_is_active_notify(move |_| refresh());
+            window_handler.replace(Some((window.downgrade(), handler)));
+        }
+        refresh_capture();
+    });
+    focus.connect_enter(move |_| {
         input.focus_in();
         sender.send(Input {
             kind: 5,

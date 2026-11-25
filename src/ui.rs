@@ -522,6 +522,20 @@ fn create_session_window(
         }
     };
     tabs.connect_selected_page_notify(sync_toolbar.clone());
+    tabs.connect_selected_page_notify(|tabs| {
+        let tabs = tabs.downgrade();
+        gtk::glib::idle_add_local_once(move || {
+            if let Some(picture) = tabs
+                .upgrade()
+                .and_then(|tabs| tabs.selected_page())
+                .and_then(|page| page.child().last_child())
+                .and_downcast::<gtk::Picture>()
+                .filter(|picture| picture.is_mapped() && picture.is_sensitive())
+            {
+                picture.grab_focus();
+            }
+        });
+    });
     let sync_attached = sync_toolbar.clone();
     tabs.connect_page_attached(move |tabs, _, _| {
         let tabs = tabs.downgrade();
