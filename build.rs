@@ -1,14 +1,20 @@
 fn main() {
     println!("cargo:rerun-if-changed=native/rdp_bridge.c");
     println!("cargo:rerun-if-changed=native/rdp_bridge.h");
-    let library = pkg_config::Config::new()
-        .atleast_version("3.25")
-        .probe("freerdp-client3")
-        .expect("FreeRDP 3.25+ development headers are required (freerdp3-dev)");
-    let winpr = pkg_config::Config::new()
-        .atleast_version("3.0")
-        .probe("winpr3")
-        .expect("WinPR 3 development headers are required (libwinpr3-dev)");
+    let probe = |metadata| {
+        let library = pkg_config::Config::new()
+            .cargo_metadata(metadata)
+            .atleast_version("3.25")
+            .probe("freerdp-client3")
+            .expect("FreeRDP 3.25+ development headers are required (freerdp3-dev)");
+        let winpr = pkg_config::Config::new()
+            .cargo_metadata(metadata)
+            .atleast_version("3.0")
+            .probe("winpr3")
+            .expect("WinPR 3 development headers are required (libwinpr3-dev)");
+        (library, winpr)
+    };
+    let (library, winpr) = probe(false);
     let mut build = cc::Build::new();
     build
         .file("native/rdp_bridge.c")
@@ -22,4 +28,6 @@ fn main() {
         build.flag("-isystem").flag(path.as_os_str());
     }
     build.compile("rdp_manager_bridge");
+    // With --as-needed, link FreeRDP after the bridge that references it.
+    probe(true);
 }
