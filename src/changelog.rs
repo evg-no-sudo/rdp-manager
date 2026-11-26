@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-39", tr!("Меню подключений привязано к нижнему краю полноэкранной панели.", "The connection menu is anchored to the bottom edge of the fullscreen bar.")),
         ("0.1.0-38", tr!("Полноэкранное меню обрабатывает ПКМ напрямую и поддерживает диагностику RDP_MANAGER_TRACE_MENU.", "The fullscreen menu handles right-button events directly and supports RDP_MANAGER_TRACE_MENU diagnostics.")),
         ("0.1.0-37", tr!("ПКМ по полноэкранной панели обрабатывается на уровне окна. Высота списка подстраивается под раскрытые группы.", "Fullscreen right-clicks are handled at window level. The connection list sizes to expanded groups.")),
         ("0.1.0-36", tr!("Полноэкранный список подключений получил ограниченную по размеру окна высоту и видимую полосу прокрутки.", "The fullscreen connection list has a window-aware height and a visible scrollbar when needed.")),

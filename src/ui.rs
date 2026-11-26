@@ -274,7 +274,10 @@ fn install_fullscreen_connections(
         if let Some(previous) = active_popup.upgrade() {
             previous.popdown();
         }
-        let popup = gtk::Popover::builder().autohide(false).build();
+        let popup = gtk::Popover::builder()
+            .autohide(false)
+            .position(gtk::PositionType::Bottom)
+            .build();
         active_popup.set(Some(&popup));
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
         let max_height = (window.height() - bar.height() - 48).clamp(1, 480);
@@ -399,7 +402,12 @@ fn install_fullscreen_connections(
         let max_width = (window.width() - 48).max(1);
         scroll.set_width_request((content_width + 24).min(max_width));
         resize();
-        popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
+        popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(
+            x as i32,
+            bar.height() - 1,
+            1,
+            1,
+        )));
         let outside = gtk::GestureClick::new();
         outside.set_button(0);
         outside.set_propagation_phase(gtk::PropagationPhase::Capture);
