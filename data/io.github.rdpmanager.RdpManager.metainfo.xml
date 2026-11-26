@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.rdpmanager.RdpManager</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Linux RDP Manager</name>
+  <summary>Connect to remote desktops over RDP</summary>
+  <summary xml:lang="ru">Подключение к удалённым рабочим столам по RDP</summary>
+  <developer id="com.github.hitttmannn">
+    <name>Evgeny Anishchenkov</name>
+  </developer>
+  <description>
+    <p>Connect to Windows and Linux remote desktops, organize saved connection profiles, and work with multiple sessions in tabs or separate windows.</p>
+    <p xml:lang="ru">Подключайтесь к удалённым рабочим столам Windows и Linux, сохраняйте профили и работайте с несколькими сеансами во вкладках или отдельных окнах.</p>
+  </description>
+  <launchable type="desktop-id">io.github.rdpmanager.RdpManager.desktop</launchable>
+  <url type="homepage">https://github.com/hitttmannn/rdp-manager</url>
+  <content_rating type="oars-1.1"/>
+</component>

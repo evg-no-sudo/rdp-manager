@@ -26,6 +26,8 @@ for lib in libfreerdp-client3 libfreerdp3 libwinpr3; do
     printf '%s 3 rdp-manager\n' "$lib" >>"$work/debian/shlibs.local"
 done
 install -Dm644 "data/$id.desktop" "$stage/usr/share/applications/$id.desktop"
+install -Dm644 "data/$id.metainfo.xml" "$stage/usr/share/metainfo/$id.metainfo.xml"
+install -Dm644 LICENSE "$stage/usr/share/doc/rdp-manager/copyright"
 cp -R data/icons "$stage/usr/share/"
 install -Dm644 "$root/.deps/src/FreeRDP-3.32.2/LICENSE" "$stage/usr/share/doc/rdp-manager/copyright.FreeRDP"
 cat >"$stage/usr/bin/rdp-manager" <<'LAUNCHER'
@@ -39,7 +41,7 @@ cat >"$work/debian/control" <<'CONTROL'
 Source: rdp-manager
 Section: net
 Priority: optional
-Maintainer: Linux RDP Manager contributors <hitttmannn@users.noreply.github.com>
+Maintainer: Evgeny Anishchenkov <hitttmannn@users.noreply.github.com>
 
 Package: rdp-manager
 Architecture: amd64
@@ -55,7 +57,7 @@ Version: $version
 Architecture: amd64
 Section: net
 Priority: optional
-Maintainer: Linux RDP Manager contributors <hitttmannn@users.noreply.github.com>
+Maintainer: Evgeny Anishchenkov <hitttmannn@users.noreply.github.com>
 Depends: $depends, libgtk-4-1 (>= 4.14), libadwaita-1-0 (>= 1.5), fuse3, hicolor-icon-theme
 Recommends: gnome-keyring
 Installed-Size: $(du -sk "$stage/usr" | cut -f1)
