@@ -327,7 +327,7 @@ fn install_fullscreen_connections(
         }
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .min_content_width(300)
+            .width_request(380)
             .max_content_height(420)
             .propagate_natural_height(true)
             .child(&items)
