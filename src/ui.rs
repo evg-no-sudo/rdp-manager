@@ -204,6 +204,8 @@ fn install_fullscreen_connections(
     let (weak_tabs, weak_window) = (tabs.downgrade(), window.downgrade());
     let gesture = gtk::GestureClick::new();
     gesture.set_button(3);
+    // Handle the bar background before the tab strip can consume the press.
+    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_bar = bar.downgrade();
     let state = state.clone();
     gesture.connect_pressed(move |gesture, _, x, y| {
