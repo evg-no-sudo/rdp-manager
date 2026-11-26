@@ -202,33 +202,57 @@ fn install_fullscreen_connections(
     state: &Rc<State>,
 ) {
     let (weak_tabs, weak_window) = (tabs.downgrade(), window.downgrade());
-    let gesture = gtk::GestureClick::new();
-    gesture.set_button(3);
-    // Capture the press even when a different widget owns the bar background.
-    gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
+    let clicks = gtk::EventControllerLegacy::new();
+    clicks.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_bar = bar.downgrade();
     let active_popup = gtk::glib::WeakRef::<gtk::Popover>::new();
+    let trace = std::env::var_os("RDP_MANAGER_TRACE_MENU").is_some();
     let state = state.clone();
-    gesture.connect_pressed(move |gesture, _, x, y| {
+    clicks.connect_event(move |_, event| {
+        use gtk::glib::Propagation;
+
+        let Some(button) = event.downcast_ref::<gtk::gdk::ButtonEvent>() else {
+            return Propagation::Proceed;
+        };
+        if event.event_type() != gtk::gdk::EventType::ButtonPress || button.button() != 3 {
+            return Propagation::Proceed;
+        }
         let (Some(bar), Some(tabs), Some(window)) = (
             weak_bar.upgrade(),
             weak_tabs.upgrade(),
             weak_window.upgrade(),
         ) else {
-            return;
+            return Propagation::Proceed;
         };
-        if !window.is_fullscreen()
-            || gesture.current_event().and_then(|event| event.surface()) != window.surface()
-        {
-            return;
+        let same_surface = event.surface() == window.surface();
+        let position = event.position();
+        if trace {
+            eprintln!(
+                "[rdp-menu] press surface={same_surface} fullscreen={} position={position:?}",
+                window.is_fullscreen()
+            );
         }
-        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        if !window.is_fullscreen() || !same_surface || !bar.is_mapped() {
+            return Propagation::Proceed;
+        }
+        let Some((x, y)) = position else {
+            return Propagation::Proceed;
+        };
+        let (surface_x, surface_y) = window.surface_transform();
+        let point = gtk::graphene::Point::new((x + surface_x) as f32, (y + surface_y) as f32);
         let Some(point) = window.compute_point(&bar, &point) else {
-            return;
+            return Propagation::Proceed;
         };
         let (x, y) = (f64::from(point.x()), f64::from(point.y()));
+        if trace {
+            eprintln!(
+                "[rdp-menu] panel x={x:.1} y={y:.1} width={} height={}",
+                bar.width(),
+                bar.height()
+            );
+        }
         if x < 0.0 || y < 0.0 || x >= f64::from(bar.width()) || y >= f64::from(bar.height()) {
-            return;
+            return Propagation::Proceed;
         }
         let mut hit = bar.pick(x, y, gtk::PickFlags::DEFAULT);
         while let Some(widget) = hit {
@@ -239,7 +263,10 @@ fn install_fullscreen_connections(
                 || widget.is::<gtk::MenuButton>()
                 || widget.css_name() == "tab"
             {
-                return;
+                if trace {
+                    eprintln!("[rdp-menu] control={}", widget.css_name());
+                }
+                return Propagation::Proceed;
             }
             hit = widget.parent();
         }
@@ -418,10 +445,13 @@ fn install_fullscreen_connections(
                 popup.unparent();
             }
         });
-        gesture.set_state(gtk::EventSequenceState::Claimed);
+        if trace {
+            eprintln!("[rdp-menu] open");
+        }
         popup.popup();
+        Propagation::Stop
     });
-    window.add_controller(gesture);
+    window.add_controller(clicks);
 }
 
 pub fn create_window(
