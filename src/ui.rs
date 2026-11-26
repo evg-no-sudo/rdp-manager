@@ -236,6 +236,7 @@ fn install_fullscreen_connections(
         };
         let popup = gtk::Popover::builder().autohide(false).build();
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let mut connection_rows = Vec::new();
         let folders = state.store.profile_folders().unwrap_or_default();
         match state.store.profiles() {
             Ok(profiles) if !profiles.is_empty() => {
@@ -293,7 +294,6 @@ fn install_fullscreen_connections(
                     let label = gtk::Label::builder()
                         .label(&profile.name)
                         .xalign(0.0)
-                        .ellipsize(gtk::pango::EllipsizeMode::End)
                         .build();
                     let button = gtk::Button::builder()
                         .child(&label)
@@ -314,6 +314,7 @@ fn install_fullscreen_connections(
                         }
                     });
                     group.append(&button);
+                    connection_rows.push((button, label));
                 }
             }
             Ok(_) => items.append(&gtk::Label::new(Some(tr!(
@@ -327,13 +328,20 @@ fn install_fullscreen_connections(
         }
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .width_request(380)
             .max_content_height(420)
             .propagate_natural_height(true)
             .child(&items)
             .build();
         popup.set_child(Some(&scroll));
         popup.set_parent(&bar);
+        let (_, mut content_width, _, _) = items.measure(gtk::Orientation::Horizontal, -1);
+        for (button, label) in connection_rows {
+            let (_, width, _, _) = button.measure(gtk::Orientation::Horizontal, -1);
+            content_width = content_width.max(width);
+            label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+        }
+        let max_width = (window.width() - 48).max(1);
+        scroll.set_width_request((content_width + 16).min(max_width));
         popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         let outside = gtk::GestureClick::new();
         outside.set_button(0);

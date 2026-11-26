@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-32", tr!("Ширина полноэкранного списка подстраивается под самое длинное имя подключения.", "The fullscreen connection list sizes to the longest connection name.")),
         ("0.1.0-31", tr!("Увеличена минимальная ширина полноэкранного списка подключений.", "Increased the minimum width of the fullscreen connection list.")),
         ("0.1.0-30", tr!("Полноэкранное меню показывает полные имена подключений при наведении. Одновременно раскрывается одна папка.", "Hover over a connection in the fullscreen menu to see its full name. Only one folder is expanded at a time.")),
         ("0.1.0-29", tr!("Ускорено сворачивание и раскрытие папок подключений в боковой панели.", "Made expanding and collapsing connection folders in the sidebar faster.")),
