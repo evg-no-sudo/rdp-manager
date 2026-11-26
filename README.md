@@ -21,7 +21,7 @@
 Первый пакет предназначен для Linux Mint 22.3, amd64. Он включает проверенную сборку FreeRDP/WinPR 3.32.2. Остальные зависимости устанавливает APT. После установки приложение доступно в меню как **Linux RDP Manager**.
 
 ```sh
-sudo apt install ./target/dist/rdp-manager_0.1.0-35_amd64.deb
+sudo apt install ./target/dist/rdp-manager_0.1.0-36_amd64.deb
 rdp-manager
 ```
 

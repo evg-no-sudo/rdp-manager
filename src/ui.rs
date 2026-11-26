@@ -328,10 +328,12 @@ fn install_fullscreen_connections(
                 "Could not load connections"
             )))),
         }
+        let menu_height = (window.height() - bar.height() - 48).clamp(1, 480);
         let scroll = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
-            .max_content_height(420)
-            .propagate_natural_height(true)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
+            .height_request(menu_height)
             .child(&items)
             .build();
         popup.set_child(Some(&scroll));
@@ -343,7 +345,7 @@ fn install_fullscreen_connections(
             label.set_ellipsize(gtk::pango::EllipsizeMode::End);
         }
         let max_width = (window.width() - 48).max(1);
-        scroll.set_width_request((content_width + 16).min(max_width));
+        scroll.set_width_request((content_width + 24).min(max_width));
         popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         let outside = gtk::GestureClick::new();
         outside.set_button(0);
