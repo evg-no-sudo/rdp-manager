@@ -163,13 +163,10 @@ pub fn show(parent: &adw::ApplicationWindow, state: Rc<State>) {
         }
         let profiles: Vec<_> = candidates.iter().filter(|(check, _)| check.is_active()).map(|(_, p)| p.clone()).collect();
         if profiles.is_empty() { message(&export_status, tr!("Отметьте хотя бы один профиль.", "Select at least one profile."), false); return; }
-        let current = match export_state.store.profiles() {
+        let profiles = match export_state.store.transfer_export(profiles) {
             Ok(profiles) => profiles,
-            Err(_) => { message(&export_status, tr!("Не удалось прочитать профили.", "Could not read profiles."), false); return; }
+            Err(error) => { message(&export_status, &error.to_string(), false); return; }
         };
-        if profiles.iter().any(|p| !current.iter().any(|local| p.uid == local.uid && p.same_fields(local))) {
-            message(&export_status, tr!("Профили изменились в другом окне. Откройте обмен заново.", "Profiles changed in another window. Reopen the exchange dialog."), false); return;
-        }
         let chooser = gtk::FileDialog::builder().title(tr!("Папка для зашифрованного набора", "Folder for Encrypted Bundle")).modal(true).build();
         let choose = chooser.select_folder_future(Some(&parent));
         let Some(root) = export_root.upgrade() else { return; };
@@ -298,9 +295,9 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
     let footer = content();
     let status = note("");
     status.set_visible(false);
-    let local = match state.store.profiles() {
-        Ok(local) => local,
-        Err(_) => {
+    let (local, folders) = match (state.store.profiles(), state.store.profile_folders()) {
+        (Ok(local), Ok(folders)) => (local, folders),
+        _ => {
             message(
                 &status,
                 tr!(
@@ -320,13 +317,26 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
     let mut seen: Vec<PortableProfile> = Vec::new();
     for incoming in profiles {
         let existing = local.iter().find(|p| p.uid == incoming.uid);
-        let unchanged = existing.is_some_and(|p| incoming.same_fields(p));
+        let existing_folder = folders.get(&incoming.uid);
+        let folder_changed = incoming.folder.as_deref().is_some_and(|folder| {
+            folder != existing_folder.map(String::as_str).unwrap_or_default()
+        });
+        let fields_match = existing.is_some_and(|p| incoming.same_fields(p));
+        let unchanged = fields_match && !folder_changed;
+        let restore_folder = fields_match
+            && existing_folder.is_none()
+            && incoming
+                .folder
+                .as_deref()
+                .is_some_and(|folder| !folder.is_empty());
         let duplicate = existing.is_none()
             && (local.iter().any(|p| incoming.same_fields(p))
                 || seen.iter().any(|p| incoming.same_fields(&p.profile())));
-        let conflict = existing.is_some() && !unchanged;
+        let conflict = existing.is_some() && !unchanged && !restore_folder;
         let label = if unchanged || duplicate {
             tr!("Уже есть — без изменений", "Already present")
+        } else if restore_folder {
+            tr!("Восстановить папку из набора", "Restore folder from bundle")
         } else if conflict {
             tr!(
                 "Отличается от локального профиля",
@@ -345,6 +355,13 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
             ))
             .build();
         row.set_use_markup(false);
+        if let Some(folder) = incoming.folder.as_deref().filter(|f| !f.is_empty()) {
+            row.set_subtitle(&format!(
+                "{} · {}",
+                row.subtitle().unwrap_or_default(),
+                folder
+            ));
+        }
         let check = gtk::CheckButton::builder()
             .active(!conflict && !unchanged && !duplicate)
             .sensitive(!unchanged && !duplicate)
@@ -388,6 +405,13 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
                     incoming.host.as_str(),
                 ));
             }
+            if let Some(folder) = incoming.folder.as_deref() {
+                fields.push((
+                    tr!("Папка", "Folder"),
+                    existing_folder.map(String::as_str).unwrap_or_default(),
+                    folder,
+                ));
+            }
             let local_port = local.port.to_string();
             let incoming_port = incoming.port.to_string();
             fields.push((tr!("Порт", "Port"), &local_port, &incoming_port));
@@ -406,7 +430,14 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
         } else {
             list.append(&row);
         }
-        candidates.push((check, action, incoming, existing.cloned()));
+        candidates.push((
+            check,
+            action,
+            incoming,
+            existing.cloned(),
+            existing_folder.cloned(),
+            restore_folder,
+        ));
     }
     body.append(&list);
     root.append(&scroll(&body));
@@ -418,18 +449,21 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
     apply.connect_clicked(move |button| {
         let changes: Vec<_> = candidates
             .iter()
-            .filter(|(check, _, _, _)| check.is_sensitive() && check.is_active())
-            .map(|(_, action, incoming, existing)| Change {
-                incoming: incoming.clone(),
-                expected: existing.clone(),
-                action: if existing.is_none() {
-                    ImportAction::Add
-                } else if action.selected() == 0 {
-                    ImportAction::Copy
-                } else {
-                    ImportAction::Replace
+            .filter(|(check, _, _, _, _, _)| check.is_sensitive() && check.is_active())
+            .map(
+                |(_, action, incoming, existing, folder, restore_folder)| Change {
+                    incoming: incoming.clone(),
+                    expected: existing.clone(),
+                    expected_folder: folder.clone(),
+                    action: if existing.is_none() {
+                        ImportAction::Add
+                    } else if !restore_folder && action.selected() == 0 {
+                        ImportAction::Copy
+                    } else {
+                        ImportAction::Replace
+                    },
                 },
-            })
+            )
             .collect();
         if changes.is_empty() {
             message(
@@ -469,7 +503,7 @@ pub fn preview(parent: &adw::Dialog, state: Rc<State>, profiles: Vec<PortablePro
                     true,
                 );
                 button.set_sensitive(false);
-                for (check, action, _, _) in &candidates {
+                for (check, action, _, _, _, _) in &candidates {
                     check.set_sensitive(false);
                     action.set_sensitive(false);
                 }

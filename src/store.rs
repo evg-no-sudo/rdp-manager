@@ -306,18 +306,7 @@ impl Store {
             ON CONFLICT(profile_uid) DO UPDATE SET keyboard_layout=excluded.keyboard_layout,quality=excluded.quality,resolution=excluded.resolution,shared_folder=excluded.shared_folder",
             params![profile.uid,options.keyboard_layout,options.quality,options.resolution,options.shared_folder])?;
         if let Some(folder) = folder {
-            if folder.is_empty() {
-                self.0.execute(
-                    "DELETE FROM profile_folders WHERE profile_uid=?1",
-                    [&profile.uid],
-                )?;
-            } else {
-                self.0.execute(
-                    "INSERT INTO profile_folders(profile_uid,name) VALUES(?1,?2)
-                     ON CONFLICT(profile_uid) DO UPDATE SET name=excluded.name",
-                    params![profile.uid, folder],
-                )?;
-            }
+            self.set_profile_folder(&profile.uid, folder)?;
         }
         transaction.commit()?;
         Ok(id)
@@ -493,6 +482,44 @@ impl Store {
         Ok(())
     }
 
+    fn set_profile_folder(&self, uid: &str, folder: &str) -> Result<()> {
+        if folder.is_empty() {
+            self.0
+                .execute("DELETE FROM profile_folders WHERE profile_uid=?1", [uid])?;
+        } else {
+            self.0.execute(
+                "INSERT INTO profile_folders(profile_uid,name) VALUES(?1,?2)
+                     ON CONFLICT(profile_uid) DO UPDATE SET name=excluded.name",
+                params![uid, folder],
+            )?;
+        }
+        Ok(())
+    }
+
+    pub fn transfer_export(
+        &self,
+        mut selected: Vec<crate::transfer::PortableProfile>,
+    ) -> Result<Vec<crate::transfer::PortableProfile>> {
+        let transaction = self.0.unchecked_transaction()?;
+        let current = self.profiles()?;
+        let folders = self.profile_folders()?;
+        for profile in &mut selected {
+            if !current
+                .iter()
+                .any(|p| p.uid == profile.uid && profile.same_fields(p))
+            {
+                return Err(tr!(
+                    "Профили изменились в другом окне. Откройте обмен заново.",
+                    "Profiles changed in another window. Reopen the exchange dialog."
+                )
+                .into());
+            }
+            profile.folder = Some(folders.get(&profile.uid).cloned().unwrap_or_default());
+        }
+        transaction.commit()?;
+        Ok(selected)
+    }
+
     pub fn apply_transfer(
         &self,
         changes: &[crate::transfer::Change],
@@ -500,10 +527,12 @@ impl Store {
         use crate::transfer::ImportAction;
         let transaction = self.0.unchecked_transaction()?;
         let local = self.profiles()?;
+        let folders = self.profile_folders()?;
         let mut ids = std::collections::HashSet::new();
         let mut additions: Vec<&crate::transfer::PortableProfile> = Vec::new();
         for change in changes {
             change.incoming.profile().validate()?;
+            change.incoming.validate_folder()?;
             if !ids.insert(&change.incoming.uid) {
                 return Err(tr!(
                     "Повторяющийся идентификатор профиля.",
@@ -512,7 +541,10 @@ impl Store {
                 .into());
             }
             let current = local.iter().find(|p| p.uid == change.incoming.uid);
-            if current != change.expected.as_ref() {
+            if current != change.expected.as_ref()
+                || (change.incoming.folder.is_some()
+                    && folders.get(&change.incoming.uid) != change.expected_folder.as_ref())
+            {
                 return Err(tr!(
                     "Профили изменились после просмотра. Откройте файл заново и повторите выбор.",
                     "Profiles changed after preview. Reopen the bundle and select them again."
@@ -562,6 +594,9 @@ impl Store {
                 }
             }
             self.save(&p)?;
+            if let Some(folder) = &change.incoming.folder {
+                self.set_profile_folder(&p.uid, folder)?;
+            }
         }
         transaction.commit()?;
         Ok((added, replaced, copied))
@@ -571,6 +606,41 @@ impl Store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transfer_restores_folder_on_existing_profile_and_preserves_it_for_legacy_bundle(
+    ) -> Result<()> {
+        use crate::transfer::{Change, ImportAction, PortableProfile};
+
+        let directory = tempfile::tempdir()?;
+        let source = Store::open(&directory.path().join("source.sqlite"))?;
+        let destination = Store::open(&directory.path().join("destination.sqlite"))?;
+        let mut profile = Profile {
+            name: "Server".into(),
+            host: "server.example.test".into(),
+            ..Profile::default()
+        };
+        source.save_with_folder(&profile, &SessionOptions::default(), Some("Work"))?;
+        profile.id = Some(destination.save(&profile)?);
+        let legacy = PortableProfile::from(&profile);
+        let exported = source.transfer_export(vec![legacy.clone()])?;
+        assert_eq!(exported[0].folder.as_deref(), Some("Work"));
+        destination.apply_transfer(&[Change {
+            incoming: exported[0].clone(),
+            expected: Some(profile.clone()),
+            expected_folder: None,
+            action: ImportAction::Replace,
+        }])?;
+        assert_eq!(destination.profiles()?, vec![profile.clone()]);
+        destination.apply_transfer(&[Change {
+            incoming: legacy,
+            expected: Some(profile.clone()),
+            expected_folder: None,
+            action: ImportAction::Replace,
+        }])?;
+        assert_eq!(destination.profile_folders()?[&profile.uid], "Work");
+        Ok(())
+    }
 
     #[test]
     fn remmina_folders_apply_to_existing_profiles_and_rename_together() -> Result<()> {
@@ -896,6 +966,7 @@ mod tests {
             store.apply_transfer(&[Change {
                 incoming: incoming.clone(),
                 expected: None,
+                expected_folder: None,
                 action: ImportAction::Add
             }])?,
             (1, 0, 0)
@@ -910,6 +981,7 @@ mod tests {
         let change = Change {
             incoming: remote.clone(),
             expected: Some(expected),
+            expected_folder: None,
             action: ImportAction::Replace,
         };
         assert!(store.apply_transfer(&[change]).is_err());
@@ -917,6 +989,7 @@ mod tests {
         store.apply_transfer(&[Change {
             incoming: remote.clone(),
             expected: Some(local.clone()),
+            expected_folder: None,
             action: ImportAction::Replace,
         }])?;
         assert_eq!(store.profiles()?[0].uid, p.uid);
@@ -925,6 +998,7 @@ mod tests {
         store.apply_transfer(&[Change {
             incoming: remote,
             expected: Some(expected),
+            expected_folder: None,
             action: ImportAction::Copy,
         }])?;
         let profiles = store.profiles()?;
@@ -947,6 +1021,7 @@ mod tests {
                     ..Profile::default()
                 }),
                 expected: None,
+                expected_folder: None,
                 action: ImportAction::Add,
             })
             .collect();

@@ -294,7 +294,7 @@ fn start(form: Rc<Form>, action: Action) {
         );
         return;
     }
-    let profiles: Vec<_> = form
+    let mut profiles: Vec<_> = form
         .candidates
         .iter()
         .filter(|(check, _)| check.is_active())
@@ -312,25 +312,13 @@ fn start(form: Rc<Form>, action: Action) {
             );
             return;
         }
-        match form.state.store.profiles() {
-            Ok(current)
-                if profiles.iter().all(|p| {
-                    current
-                        .iter()
-                        .any(|local| p.uid == local.uid && p.same_fields(local))
-                }) => {}
-            _ => {
-                notify(
-                    &form.status,
-                    tr!(
-                        "Локальные профили изменились. Откройте окно WebDAV заново.",
-                        "Local profiles have changed. Reopen the WebDAV dialog."
-                    ),
-                    false,
-                );
+        profiles = match form.state.store.transfer_export(profiles) {
+            Ok(profiles) => profiles,
+            Err(error) => {
+                notify(&form.status, &error.to_string(), false);
                 return;
             }
-        }
+        };
     }
     let selected = if matches!(action, Action::Download) {
         let snapshots = form.snapshots.borrow();

@@ -57,6 +57,8 @@ pub struct PortableProfile {
     pub port: u16,
     pub username: String,
     pub domain: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub folder: Option<String>,
 }
 
 impl From<&Profile> for PortableProfile {
@@ -68,11 +70,23 @@ impl From<&Profile> for PortableProfile {
             port: p.port,
             username: p.username.clone(),
             domain: p.domain.clone(),
+            folder: None,
         }
     }
 }
 
 impl PortableProfile {
+    pub fn validate_folder(&self) -> Result<()> {
+        if self
+            .folder
+            .as_deref()
+            .is_some_and(|name| name.chars().count() > 80 || name.chars().any(char::is_control))
+        {
+            return Err(tr!("Некорректное название папки.", "Invalid folder name.").into());
+        }
+        Ok(())
+    }
+
     pub fn profile(&self) -> Profile {
         Profile {
             id: None,
@@ -111,6 +125,7 @@ fn validate(profiles: &[PortableProfile]) -> Result<()> {
     }
     let mut ids = HashSet::new();
     for p in profiles {
+        p.validate_folder()?;
         p.profile().validate().map_err(|_| {
             tr!(
                 "Набор содержит некорректный профиль.",
@@ -326,6 +341,7 @@ pub enum ImportAction {
 pub struct Change {
     pub incoming: PortableProfile,
     pub expected: Option<Profile>,
+    pub expected_folder: Option<String>,
     pub action: ImportAction,
 }
 
@@ -344,7 +360,8 @@ mod tests {
 
     #[test]
     fn encrypted_roundtrip_authentication_and_randomness() {
-        let original = profiles();
+        let mut original = profiles();
+        original[0].folder = Some("Работа".into());
         let bytes = encrypt(original.clone(), PASSWORD).unwrap();
         assert_eq!(decrypt(&bytes, PASSWORD).unwrap(), original);
         assert_ne!(encrypt(original, PASSWORD).unwrap(), bytes);

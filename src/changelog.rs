@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-34", tr!("Зашифрованный обмен переносит папки подключений и восстанавливает их у ранее импортированных профилей.", "Encrypted profile exchange includes folders and restores them on previously imported profiles.")),
         ("0.1.0-33", tr!("В DEB добавлены метаданные AppStream, лицензия Apache-2.0 и имя разработчика.", "The DEB now includes AppStream metadata, the Apache-2.0 license, and the developer name.")),
         ("0.1.0-32", tr!("Ширина полноэкранного списка подстраивается под самое длинное имя подключения.", "The fullscreen connection list sizes to the longest connection name.")),
         ("0.1.0-31", tr!("Увеличена минимальная ширина полноэкранного списка подключений.", "Increased the minimum width of the fullscreen connection list.")),
