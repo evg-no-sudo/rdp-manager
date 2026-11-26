@@ -31,6 +31,7 @@ pub fn show(parent: &adw::ApplicationWindow, _: Rc<State>) {
             .build(),
     );
     for (number, changes) in [
+        ("0.1.0-37", tr!("ПКМ по полноэкранной панели обрабатывается на уровне окна. Высота списка подстраивается под раскрытые группы.", "Fullscreen right-clicks are handled at window level. The connection list sizes to expanded groups.")),
         ("0.1.0-36", tr!("Полноэкранный список подключений получил ограниченную по размеру окна высоту и видимую полосу прокрутки.", "The fullscreen connection list has a window-aware height and a visible scrollbar when needed.")),
         ("0.1.0-35", tr!("ПКМ по свободному месту полноэкранной панели обрабатывается по всей её высоте.", "Right-clicking empty space on the fullscreen bar is handled across its full height.")),
         ("0.1.0-34", tr!("Зашифрованный обмен переносит папки подключений и восстанавливает их у ранее импортированных профилей.", "Encrypted profile exchange includes folders and restores them on previously imported profiles.")),

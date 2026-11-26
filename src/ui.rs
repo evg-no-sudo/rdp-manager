@@ -204,19 +204,30 @@ fn install_fullscreen_connections(
     let (weak_tabs, weak_window) = (tabs.downgrade(), window.downgrade());
     let gesture = gtk::GestureClick::new();
     gesture.set_button(3);
-    // Handle the bar background before the tab strip can consume the press.
+    // Capture the press even when a different widget owns the bar background.
     gesture.set_propagation_phase(gtk::PropagationPhase::Capture);
     let weak_bar = bar.downgrade();
+    let active_popup = gtk::glib::WeakRef::<gtk::Popover>::new();
     let state = state.clone();
     gesture.connect_pressed(move |gesture, _, x, y| {
-        let Some(bar) = weak_bar.upgrade() else {
+        let (Some(bar), Some(tabs), Some(window)) = (
+            weak_bar.upgrade(),
+            weak_tabs.upgrade(),
+            weak_window.upgrade(),
+        ) else {
             return;
         };
-        if !bar
-            .root()
-            .and_downcast::<gtk::Window>()
-            .is_some_and(|window| window.is_fullscreen())
+        if !window.is_fullscreen()
+            || gesture.current_event().and_then(|event| event.surface()) != window.surface()
         {
+            return;
+        }
+        let point = gtk::graphene::Point::new(x as f32, y as f32);
+        let Some(point) = window.compute_point(&bar, &point) else {
+            return;
+        };
+        let (x, y) = (f64::from(point.x()), f64::from(point.y()));
+        if x < 0.0 || y < 0.0 || x >= f64::from(bar.width()) || y >= f64::from(bar.height()) {
             return;
         }
         let mut hit = bar.pick(x, y, gtk::PickFlags::DEFAULT);
@@ -233,11 +244,30 @@ fn install_fullscreen_connections(
             hit = widget.parent();
         }
 
-        let (Some(tabs), Some(window)) = (weak_tabs.upgrade(), weak_window.upgrade()) else {
-            return;
-        };
+        if let Some(previous) = active_popup.upgrade() {
+            previous.popdown();
+        }
         let popup = gtk::Popover::builder().autohide(false).build();
+        active_popup.set(Some(&popup));
         let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let max_height = (window.height() - bar.height() - 48).clamp(1, 480);
+        let scroll = gtk::ScrolledWindow::builder()
+            .hscrollbar_policy(gtk::PolicyType::Never)
+            .vscrollbar_policy(gtk::PolicyType::Automatic)
+            .overlay_scrolling(false)
+            .child(&items)
+            .build();
+        popup.set_child(Some(&scroll));
+        popup.set_parent(&bar);
+        let resize = Rc::new({
+            let (items, scroll) = (items.downgrade(), scroll.downgrade());
+            move || {
+                if let (Some(items), Some(scroll)) = (items.upgrade(), scroll.upgrade()) {
+                    let (_, height, _, _) = items.measure(gtk::Orientation::Vertical, -1);
+                    scroll.set_height_request(height.clamp(1, max_height));
+                }
+            }
+        });
         let mut connection_rows = Vec::new();
         let folders = state.store.profile_folders().unwrap_or_default();
         match state.store.profiles() {
@@ -267,6 +297,7 @@ fn install_fullscreen_connections(
                             .build();
                         let state = state.clone();
                         let folder_name = folder.to_owned();
+                        let resize = resize.clone();
                         expander.connect_expanded_notify(move |expander| {
                             if expander.is_expanded() {
                                 state.fullscreen_folder.replace(Some(folder_name.clone()));
@@ -288,7 +319,11 @@ fn install_fullscreen_connections(
                                 return;
                             }
                             let state = state.clone();
-                            gtk::glib::idle_add_local_once(move || state.save_view_preferences());
+                            let resize = resize.clone();
+                            gtk::glib::idle_add_local_once(move || {
+                                resize();
+                                state.save_view_preferences();
+                            });
                         });
                         items.append(&expander);
                         previous = Some(folder);
@@ -328,16 +363,6 @@ fn install_fullscreen_connections(
                 "Could not load connections"
             )))),
         }
-        let menu_height = (window.height() - bar.height() - 48).clamp(1, 480);
-        let scroll = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vscrollbar_policy(gtk::PolicyType::Automatic)
-            .overlay_scrolling(false)
-            .height_request(menu_height)
-            .child(&items)
-            .build();
-        popup.set_child(Some(&scroll));
-        popup.set_parent(&bar);
         let (_, mut content_width, _, _) = items.measure(gtk::Orientation::Horizontal, -1);
         for (button, label) in connection_rows {
             let (_, width, _, _) = button.measure(gtk::Orientation::Horizontal, -1);
@@ -346,6 +371,7 @@ fn install_fullscreen_connections(
         }
         let max_width = (window.width() - 48).max(1);
         scroll.set_width_request((content_width + 24).min(max_width));
+        resize();
         popup.set_pointing_to(Some(&gtk::gdk::Rectangle::new(x as i32, y as i32, 1, 1)));
         let outside = gtk::GestureClick::new();
         outside.set_button(0);
@@ -395,7 +421,7 @@ fn install_fullscreen_connections(
         gesture.set_state(gtk::EventSequenceState::Claimed);
         popup.popup();
     });
-    bar.add_controller(gesture);
+    window.add_controller(gesture);
 }
 
 pub fn create_window(
