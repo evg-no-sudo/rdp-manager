@@ -328,7 +328,10 @@ pub fn connect(
             ))
             .build();
         let fields = gtk::Box::new(gtk::Orientation::Vertical, 8);
-        let password = gtk::PasswordEntry::builder().show_peek_icon(true).build();
+        let password = gtk::PasswordEntry::builder()
+            .show_peek_icon(true)
+            .activates_default(true)
+            .build();
         let remember = gtk::CheckButton::with_label(tr!(
             "Сохранить пароль на этом ПК",
             "Save password on this computer"
@@ -345,7 +348,11 @@ pub fn connect(
         let weak_parent = parent.downgrade();
         let weak_tabs = tabs.downgrade();
         let focus_password = password.clone();
+        let trace = std::env::var_os("RDP_MANAGER_TRACE_CONNECT").is_some();
         prompt.connect_response(None, move |_, response| {
+            if trace {
+                eprintln!("[rdp-connect] password dialog response={response}");
+            }
             if response != "connect" {
                 password.set_text("");
                 return;
@@ -369,7 +376,18 @@ pub fn connect(
                 {
                     return;
                 }
-                if remember {
+                let (Some(parent), Some(tabs)) = (weak_parent.upgrade(), weak_tabs.upgrade())
+                else {
+                    return;
+                };
+                let save_password = remember.then(|| secret.clone());
+                if trace {
+                    eprintln!("[rdp-connect] starting session; save_password={remember}");
+                }
+                connect_saved(&parent, &tabs, state.clone(), &uid, secret);
+                drop(parent);
+                drop(tabs);
+                if let Some(secret) = save_password {
                     if let Err(error) = secrets::store(&uid, &secret).await {
                         if let Some(parent) = weak_parent.upgrade() {
                             let alert = adw::AlertDialog::builder()
@@ -379,13 +397,9 @@ pub fn connect(
                             alert.add_response("close", tr!("Закрыть", "Close"));
                             alert.present(Some(&parent));
                         }
-                        return;
                     }
                 }
                 drop(operation);
-                if let (Some(parent), Some(tabs)) = (weak_parent.upgrade(), weak_tabs.upgrade()) {
-                    connect_saved(&parent, &tabs, state, &uid, secret);
-                }
             });
         });
         prompt.present(Some(&parent));
